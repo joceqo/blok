@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyUpdate, Doc } from 'yjs';
@@ -257,6 +257,7 @@ it('reads the history of a document another writer holds, and refuses what needs
   const ask = (suffix: string) =>
     historyRead({
       directory,
+      documentId: page,
       request: { url: new URL('http://host/api/blok/sync/' + page + '/history' + suffix), method: 'GET', confirmed: [] },
       recordNotes: false,
     });
@@ -293,6 +294,7 @@ it('reads the history of a document another writer holds, and refuses what needs
     expect((await ask('/../state')).status).toBe(405);
     expect((await historyRead({
       directory,
+      documentId: page,
       request: { url: new URL('http://host/api/blok/sync/' + page + '/history/' + lineage + '/0/restore'),
         method: 'POST', key: 'k1', confirmed: [] },
     })).status).toBe(405);
@@ -378,6 +380,86 @@ it('orders a record\'s blocks as the after document holds them, then what it dro
       ['b', 'changed'],
       ['gone', 'removed'],
     ]);
+  } finally {
+    doc.destroy();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('opens the journal the room would open, for a room with page storage and for one without', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'blok-history-where-'));
+  const seedPage = async (page: string, text: string) => {
+    const baseline = newBaseline(seedUpdate({ blocks: [{ id: 'a', type: 'paragraph', data: { text } }] }));
+    await initializePage(root, page, baseline, '{}', async () => {});
+    return Buffer.from(baseline.lineage).toString('hex');
+  };
+  const list = (room: { directory: string; documentId: string; projection?: boolean }) =>
+    historyRead({
+      ...room,
+      recordNotes: false,
+      request: {
+        url: new URL('http://host/api/blok/sync/' + room.documentId + '/history'),
+        method: 'GET',
+        confirmed: [],
+      },
+    });
+  const named = (answer: { body?: unknown }) =>
+    (answer.body as { lineages: { lineage: string }[] }).lineages.map((entry) => entry.lineage);
+  try {
+    const held = await seedPage('held-2', 'held');
+    const neighbour = await seedPage('other-2', 'other');
+    // A room without page storage is handed the document's own directory; one
+    // with page storage is handed the root every document lives under. Both
+    // must reach the same journal, because both describe the same room.
+    const plain = await list({ directory: pageDirectory(root, 'held-2'), documentId: 'held-2' });
+    const projected = await list({ directory: root, documentId: 'held-2', projection: true });
+
+    expect([plain.status, named(plain)]).toEqual([200, [held]]);
+    expect([projected.status, named(projected)]).toEqual([200, [held]]);
+    // The document names the journal: the neighbour under the same root is never it.
+    expect(named(await list({ directory: root, documentId: 'other-2', projection: true }))).toEqual([neighbour]);
+    expect(neighbour).not.toBe(held);
+    // A root is not a journal. A read that resolved it as one must say so
+    // rather than answer off some other directory.
+    await expect(list({ directory: root, documentId: 'held-2' })).rejects.toThrow(/lineage/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('reports a journal it cannot decode rather than answering off its truncated head', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'blok-history-torn-'));
+  const page = 'torn-1',
+    directory = pageDirectory(root, page);
+  const snapshot = (text: string) => ({ blocks: [{ id: 'a', type: 'paragraph', data: { text } }] });
+  const seed = seedUpdate(snapshot('one'));
+  const baseline = newBaseline(seed);
+  const lineage = Buffer.from(baseline.lineage).toString('hex');
+  const doc = new Doc();
+  applyUpdate(doc, seed);
+  await initializePage(root, page, baseline, '{}', async () => {});
+  await appendJournal(directory, { expectedLineage: lineage, expectedThrough: 0n,
+    operationId: '1'.repeat(32), source: 0, actorId: 'u1', update: restorePage(doc, snapshot('two')) });
+  const ask = (suffix: string) =>
+    historyRead({
+      directory,
+      documentId: page,
+      recordNotes: false,
+      request: { url: new URL('http://host/api/blok/sync/' + page + '/history' + suffix), method: 'GET', confirmed: [] },
+    });
+  try {
+    const names = (await readdir(directory)).filter((name) => name.startsWith('journal.'));
+    const journal = names.length === 1 ? join(directory, names[0] ?? '') : '';
+
+    expect(journal).not.toBe('');
+
+    const bytes = await readFile(journal);
+    await writeFile(journal, bytes.subarray(0, bytes.length - 8));
+
+    // The record is damaged, not absent. A read that took the decodable prefix
+    // for the document's head would call sequence 1 a version nobody wrote.
+    await expect(ask('/' + lineage + '/1')).rejects.toThrow(/Inconsistent history/);
+    await expect(ask('')).rejects.toThrow(/Inconsistent history/);
   } finally {
     doc.destroy();
     await rm(root, { recursive: true, force: true });

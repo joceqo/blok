@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createHostHandler } from '../host/app.ts';
+import { createHostApp, createHostHandler } from '../host/app.ts';
 import type { HostAppOptions } from '../host/options.ts';
 import { hostNames } from '../host/host-check.ts';
 import { RateLimiter } from '../host/rate-limit.ts';
@@ -169,18 +169,27 @@ function buildHead(input: InvokeHostRequest): Head {
   };
 }
 
-/** Fast tier: handler in one process, no `blok-server` spawn. */
+/**
+ * Fast tier: handler in one process, no `blok-server` spawn. The host is this
+ * one request's own, and is drained with it: a collaboration host holds its
+ * documents' journal leases for as long as it is up, so one left running would
+ * lock the next call out of the very directory it was given.
+ */
 export async function invokeHost(
   options: HostAppOptions,
   input: InvokeHostRequest,
 ): Promise<ParsedHttpResponse> {
-  const handler = createHostHandler(options);
+  const app = createHostApp(options);
   const { socket, drain } = createCollectingSocket();
   const body = input.body === undefined
     ? undefined
     : typeof input.body === 'string'
       ? new TextEncoder().encode(input.body)
       : input.body;
-  await runHandlerOnce(handler, buildHead(input), socket, body);
-  return parseHttpResponse(drain());
+  try {
+    await runHandlerOnce(app.handler, buildHead(input), socket, body);
+    return parseHttpResponse(drain());
+  } finally {
+    await app.close();
+  }
 }

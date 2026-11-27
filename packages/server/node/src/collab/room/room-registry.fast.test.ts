@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { createRoomRegistry, RoomBusy } from './room-registry.ts';
 
 /** A stand-in for the part of DocumentRoom the registry touches. */
-const stubRoom = () => ({ close: vi.fn(async () => {}) });
+const stubRoom = (available = true) => ({ close: vi.fn(async () => {}), available: () => available });
 
 const registry = (overrides: Partial<Parameters<typeof createRoomRegistry>[0]> = {}) =>
   createRoomRegistry({ open: async () => stubRoom(), ...overrides });
@@ -101,4 +101,90 @@ it('refuses admission once the host is stopping', async () => {
   await rooms.close();
 
   await expect(rooms.reserve('doc')).rejects.toBeInstanceOf(RoomBusy);
+});
+
+it('holds a document for its linger after the last member leaves, and starts the wait over for the next one', async () => {
+  vi.useFakeTimers();
+  try {
+    const room = stubRoom();
+    const rooms = registry({ open: async () => room, evictionLingerMs: 30_000 });
+
+    rooms.release('doc', await rooms.reserve('doc'));
+    await vi.advanceTimersByTimeAsync(29_999);
+
+    // The journal lease is still this host's, so the next request finds the room.
+    expect(room.close).not.toHaveBeenCalled();
+    expect(rooms.loaded()).toBe(1);
+
+    rooms.release('doc', await rooms.reserve('doc'));
+    await vi.advanceTimersByTimeAsync(29_999);
+
+    expect(room.close).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await rooms.settled();
+
+    expect(room.close).toHaveBeenCalledOnce();
+    expect(rooms.loaded()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('closes a lingering document with the host, and leaves no timer behind', async () => {
+  vi.useFakeTimers();
+  try {
+    const room = stubRoom();
+    const rooms = registry({ open: async () => room, evictionLingerMs: 30_000 });
+
+    rooms.release('doc', await rooms.reserve('doc'));
+    await rooms.close();
+
+    expect(room.close).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('gives a lingering document its place back rather than refusing the host a new one', async () => {
+  vi.useFakeTimers();
+  try {
+    const room = stubRoom();
+    const rooms = registry({ open: async () => room, maxDocuments: 1, evictionLingerMs: 30_000 });
+
+    rooms.release('first', await rooms.reserve('first'));
+
+    // One place, and the document waiting out its linger is sitting in it.
+    expect(rooms.loaded()).toBe(1);
+
+    // A document nobody is in is held FOR the member who may come back, never
+    // AGAINST one who is here now.
+    await expect(rooms.reserve('second')).resolves.toBeDefined();
+    expect(room.close).toHaveBeenCalledOnce();
+    expect(rooms.peek('first')).toBeUndefined();
+    expect(rooms.loaded()).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('never lingers a room that can no longer serve its document', async () => {
+  vi.useFakeTimers();
+  try {
+    // A room that discarded itself — a failed journal commit is how that
+    // happens — can serve nobody, and holding it holds its lease too.
+    const room = stubRoom(false);
+    const rooms = registry({ open: async () => room, evictionLingerMs: 30_000 });
+
+    rooms.release('doc', await rooms.reserve('doc'));
+    await vi.advanceTimersByTimeAsync(0);
+    await rooms.settled();
+
+    // The member who reconnects gets a room opened over the document, never this one.
+    expect(room.close).toHaveBeenCalledOnce();
+    expect(rooms.loaded()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

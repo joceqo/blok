@@ -16,7 +16,7 @@ import type { RoomIdentity, RoomOptions } from '../collab/room/preview.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { writePlain } from '../route/respond.ts';
-import type { HistoryRequest } from '../collab/room/history.ts';
+import { detachedHistory, historyRead, type HistoryRequest } from '../collab/room/history.ts';
 import type { HistoryAnswer } from './collab-http.ts';
 import { addressKey, classifyPass, hostRefused, inspectOrigin, type PassFailure } from './guard.ts';
 import { InboundBudget } from './inbound-budget.ts';
@@ -60,6 +60,15 @@ const MAX_MEMBER_SOCKETS = 8;
  * RFC 6455 timeout.
  */
 const REFUSAL_LINGER_MS = 250;
+
+/**
+ * How long a document stays loaded after its last member leaves. The room is
+ * what holds the document's journal lease, so this is also how long another
+ * server is kept out: a host that dropped the lease between two requests would
+ * hand the document to whoever asked next, mid-session. Go's
+ * `Options.EvictionLinger`, and the same thirty seconds.
+ */
+const EVICTION_LINGER_MS = 30_000;
 
 /** The failures that reach the client as a close reason, worst last. */
 const FAILURE_ORDER: PassFailure[] = ['missing pass', 'invalid pass', 'pass is for another document', 'pass names no user'];
@@ -188,9 +197,19 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     };
   }
 
+  /**
+   * Where this host keeps one document's journal. The room is opened against
+   * exactly this directory and keeps no page storage of its own, so a read
+   * that bypasses the room has to resolve it the same way — through here, not
+   * by spelling the path again.
+   */
+  function journalOf(documentId: string): string {
+    return pageDirectory(options.collabDirectory, documentId);
+  }
+
   async function openRoom(documentId: string): Promise<DocumentRoom> {
     try {
-      const directory = pageDirectory(options.collabDirectory, documentId);
+      const directory = journalOf(documentId);
       if (!(await existingDirectory(directory))) {
         // The anchor belongs to canonical projection, which this host does not
         // run. An empty one refuses a later projection rather than lying to it.
@@ -232,10 +251,14 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     }
   }
 
-  const rooms = createRoomRegistry<DocumentRoom>({ open: openRoom });
   // The documents this host currently holds. The registry can name its
   // residents but not their ids, and a drain has to close them BY id.
   const held = new Set<string>();
+  const rooms = createRoomRegistry<DocumentRoom>({
+    open: openRoom,
+    evictionLingerMs: EVICTION_LINGER_MS,
+    onUnloaded: (doc) => held.delete(doc),
+  });
   const sockets = new WebSocketServer({
     noServer: true,
     perMessageDeflate: false,
@@ -525,13 +548,6 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
       }
       if (entry !== undefined) {
         rooms.release(doc, entry);
-        // The id is owed to the drain only while the document is loaded. The
-        // release above may unload it; `settled` is when that has run.
-        void rooms.settled().then(() => {
-          if (rooms.peek(doc) === undefined) {
-            held.delete(doc);
-          }
-        });
       }
     }
   }
@@ -540,6 +556,11 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
    * Reaches the room for one HTTP request. The room serialises it behind its
    * own queue, so a reader never sees a half-applied commit; the lease is held
    * only for as long as the request runs.
+   *
+   * A history read never reaches it at all: it takes no lock, as Go's does
+   * not, so a document another server holds still lists its versions. Only the
+   * state door and a restore need the live document — and the lease that comes
+   * with it.
    */
   async function history(doc: string, ticket: string, request: HistoryRequest): Promise<HistoryAnswer> {
     if (stopping) {
@@ -548,6 +569,14 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     const identity = await authorize(ticket, doc).catch(() => null);
     if (identity === null) {
       return { status: 403 };
+    }
+    if (detachedHistory(request)) {
+      return historyRead({
+        directory: journalOf(doc),
+        documentId: doc,
+        request,
+        recordNotes: options.collabRecordNotes,
+      });
     }
     const entry = await rooms.reserve(doc);
     held.add(doc);
@@ -559,11 +588,6 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
       return await room.history(request, identity, ticket);
     } finally {
       rooms.release(doc, entry);
-      void rooms.settled().then(() => {
-        if (rooms.peek(doc) === undefined) {
-          held.delete(doc);
-        }
-      });
     }
   }
 
@@ -590,11 +614,6 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
       return await room.apply(command, identity, ticket);
     } finally {
       rooms.release(doc, entry);
-      void rooms.settled().then(() => {
-        if (rooms.peek(doc) === undefined) {
-          held.delete(doc);
-        }
-      });
     }
   }
 

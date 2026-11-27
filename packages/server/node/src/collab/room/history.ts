@@ -18,6 +18,7 @@ import { readRecordNotes, recordActor, type HistoryActor } from './record-notes.
 import { timeHistory } from './history-time.ts';
 import { deleteArchivedLineage, historyLineages, type HistoryLineage } from './history-lineages.ts';
 import { inspectJournal } from '../journal/inspect.ts';
+import { pageDirectory } from './page-seed.ts';
 import { MAX_APPEND_BYTES } from '../journal/append.ts';
 import { exportPage, restorePage } from './page-document.ts';
 import { operationIdForKey } from '../edit/canonical.ts';
@@ -380,27 +381,52 @@ export async function historyRequest(input: {
 }
 
 /**
+ * Which requests the journal alone can answer. Everything else reads the live
+ * document, which only the holder of its lease has: the state door, a restore,
+ * and anything that writes — deleting an archived lineage among them.
+ */
+export function detachedHistory(request: Pick<Request, 'url' | 'method'>): boolean {
+  const segments = request.url.pathname.split('/');
+  if (request.method !== 'GET') return false;
+  return !(segments.length === 6 && request.url.pathname.endsWith('/state')) && !segments.includes('restore');
+}
+
+/**
  * The history routes against the journal alone, with no room loaded: a server
  * that does not hold the document's lease still answers them. The state door
  * and a restore are refused, because both read the live document, which only
  * the holder of the lease has.
+ *
+ * `directory` is the room's own directory option, NOT the journal's: a room
+ * with canonical page storage is given the root every document lives under and
+ * keeps each one in a page directory beneath it (`preparePageStorage`), while a
+ * room without page storage is given the document's directory itself. The
+ * resolution is here rather than at the call site because getting it wrong
+ * opens another document's journal, or none, and says nothing about it.
  */
 export async function historyRead(input: {
   directory: string;
+  documentId: string;
+  /** Set when the room keeps canonical page storage, as `RoomOptions.projection` is. */
+  projection?: boolean;
   request: Request;
   project?: (doc: Doc) => Record<string, unknown>;
   recordNotes?: boolean;
 }): Promise<Result> {
-  const { directory, request } = input;
-  const segments = request.url.pathname.split('/');
-  if ((segments.length === 6 && request.url.pathname.endsWith('/state')) || segments.includes('restore'))
-    return { status: 405 };
+  const { request } = input;
+  const directory = input.projection ? pageDirectory(input.directory, input.documentId) : input.directory;
+  if (!detachedHistory(request)) return { status: 405 };
   const live = (await historyLineages(directory)).find((entry) => entry.current);
   if (!live) return { status: 404 };
   const { manifest } = live;
   // The journal on disk is the only head there is. Reading it takes no lease,
   // and replays nothing: the routes below do their own.
   const report = await inspectJournal(directory, undefined, undefined, true, manifest);
+  // A journal that will not decode is this server's own failure, not a version
+  // that was never written: taking its truncated head for the real one would
+  // answer 404 for every point past the damage, as if the document were
+  // shorter. `readLineage` refuses the same way, on the same reading.
+  if (report.integrity !== 'ok') throw new Error('Inconsistent history');
   const doc = new Doc();
   try {
     return await historyRequest({
