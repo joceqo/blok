@@ -28,17 +28,6 @@ describe('page appearance toolbar', () => {
     expect(toolbar.element.querySelector<HTMLElement>('[role="status"]')!.hidden).toBe(false);
     toolbar.destroy();
   });
-  it('opens fresh workspace choices from its breadcrumb', () => {
-    const onOpen = vi.fn();
-    const workspacePages = vi.fn(() => [{ id: 'a', title: 'Guide', onOpen }]);
-    const toolbar = createPageToolbar([{ id: 'a', title: 'Guide' }], false, vi.fn(), undefined, undefined, { workspaceName: 'Équipe', workspacePages });
-    document.body.append(toolbar.element);
-    toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-workspace]')!.click();
-    expect(workspacePages).toHaveBeenCalledOnce();
-    toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-breadcrumb-menu-item="a"]')!.click();
-    expect(onOpen).toHaveBeenCalledOnce();
-    toolbar.destroy();
-  });
   it('changes a page to full width and keeps the choice visible in the menu', () => {
     const onFullWidthChange = vi.fn();
     const toolbar = createPageToolbar([{ id: 'plan', title: 'Plan', icon: '🏈' }], false, onFullWidthChange);
@@ -166,4 +155,26 @@ it('moves through page actions with the keyboard and restores focus on Escape', 
     expect(document.activeElement).toBe(trigger);
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
   } finally { toolbar.destroy(); toolbar.element.remove(); }
+});
+
+describe('fil de la page', () => {
+  it('ne nomme plus l’espace au-dessus de la page', () => {
+    // Un fil nomme les parents d'une page. L'espace n'en est pas un : son nom
+    // est déjà dans la barre latérale, et le répéter ici n'apprend rien. La
+    // place reste libre pour un espace d'équipe, qui lui est un parent.
+    const toolbar = createPageToolbar([{id: 'p', title: 'Nouvelle page'}], false, vi.fn());
+    document.body.append(toolbar.element);
+    expect(toolbar.element.querySelector('[data-desktop-page-workspace]')).toBeNull();
+    expect(toolbar.element.textContent).toContain('Nouvelle page');
+    toolbar.destroy();
+  });
+
+  it('garde le fil des parents quand la page en a', () => {
+    const toolbar = createPageToolbar([{id: 'parent', title: 'Parent'}, {id: 'p', title: 'Enfant'}], false, vi.fn());
+    document.body.append(toolbar.element);
+    expect(toolbar.element.querySelector('[data-desktop-page-workspace]')).toBeNull();
+    expect(toolbar.element.querySelector('nav')?.textContent).toContain('Parent');
+    expect(toolbar.element.querySelector('[data-desktop-page-breadcrumb-separator]')?.textContent).toBe('/');
+    toolbar.destroy();
+  });
 });

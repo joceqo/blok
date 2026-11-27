@@ -74,8 +74,6 @@ export function createPageToolbar(
   onShare?: (anchor: HTMLButtonElement) => (() => void) | void,
   options: {
     viewControls?: HTMLElement;
-    workspaceName?: string;
-    workspacePages?: () => PageBreadcrumbChoice[];
     pageUrl?: (id: string) => string;
     favorite?: boolean;
     onFavorite?: (favorite: boolean) => void;
@@ -109,29 +107,7 @@ export function createPageToolbar(
   local.setAttribute('data-desktop-page-local', '');
   local.title = shellText("Cette page est enregistrée sur cet appareil");
   local.append(glyph(['M2.5 3.5h11v8h-11z', 'M5.5 13.5h5']), document.createTextNode(shellText("Sur cet appareil")));
-  if (options.workspaceName) {
-    const workspace = document.createElement('button');
-    workspace.type = 'button';
-    workspace.setAttribute('data-desktop-page-workspace', '');
-    workspace.title = options.workspaceName;
-    workspace.append(glyph(['M2 7 8 2l6 5', 'M4 6v7h3V9h2v4h3V6']));
-    const name = document.createElement('span');
-    name.textContent = options.workspaceName;
-    workspace.append(name);
-    if (options.workspacePages) {
-      workspace.setAttribute('aria-haspopup', 'menu');
-      workspace.setAttribute('aria-expanded', 'false');
-      workspace.addEventListener('click', () => openBreadcrumbMenu({
-        id: 'workspace', title: options.workspaceName!, menuHeading: options.workspaceName,
-        menu: options.workspacePages!(),
-      }, workspace));
-    }
-    const separator = document.createElement('span');
-    separator.setAttribute('data-desktop-page-breadcrumb-separator', '');
-    separator.textContent = '/';
-    separator.setAttribute('aria-hidden', 'true');
-    identity.append(workspace, separator, trail);
-  } else identity.append(trail, local);
+  identity.append(trail, local);
   if (options.viewControls) trail.after(options.viewControls);
   if (options.readOnly) {
     const badge = document.createElement('span');
