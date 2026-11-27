@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { assistantActions } from '../../../../../src/components/modules/assistant/actions';
 
+import type { ActionContext } from '../../../../../src/components/modules/assistant/actions';
+
 const t = (key: string): string => `<${key}>`;
+const destinationOf = (context: ActionContext, id: string): string | undefined =>
+  assistantActions(context, t).find((action) => action.label === t(`assistant.action.${id}`))?.destination;
 
 describe('assistantActions', () => {
   it('offers edits of the selected text when text is selected', () => {
@@ -84,6 +88,24 @@ describe('assistantActions', () => {
     ];
 
     expect(assistantActions('caret', t, host).map((action) => action.icon)).toEqual(['<svg></svg>', undefined]);
+  });
+
+  it('tells the bar where each action\'s result goes', () => {
+    expect(destinationOf('selection', 'explain')).toBe('answer');
+    expect(destinationOf('selection', 'improve')).toBe('replaceSelection');
+    expect(destinationOf('caret', 'summarize')).toBe('answer');
+    expect(destinationOf('caret', 'continue')).toBe('document');
+  });
+
+  it('reads a destination per context: proofread swaps a selection, and edits the page at a caret', () => {
+    expect(destinationOf('selection', 'proofread')).toBe('replaceSelection');
+    expect(destinationOf('caret', 'proofread')).toBe('document');
+  });
+
+  it('leaves a host action without a destination: the host never said where its result goes', () => {
+    const [action] = assistantActions('caret', t, [{ label: 'Title', prompt: 'Suggest a title.' }]);
+
+    expect(action.destination).toBeUndefined();
   });
 
   it('hides every action for an empty host list', () => {

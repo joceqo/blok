@@ -10,17 +10,22 @@ import {
   IconAskAiSimplify,
   IconAskAiSummarize,
 } from '../../icons';
-import { skillsFor } from '../../../shared/skills';
-import type { SkillId } from '../../../shared/skills';
+import { skillDestination, skillsFor } from '../../../shared/skills';
+import type { SkillDestination, SkillId } from '../../../shared/skills';
 
 /** Where the bar opened: over selected text, at a caret, or on a page with no text. */
 export type ActionContext = 'selection' | 'caret' | 'empty';
 
-/** A button under the prompt field: its label, the prompt it sends, and an optional icon. */
+/** A button under the prompt field: its label, the prompt it sends, where its result goes, and an optional icon. */
 export interface AssistantAction {
   label: string;
   prompt: string;
   icon?: string;
+  /**
+   * What becomes of the result; the bar reads it to know which buttons the answer deserves.
+   * A host's action says nothing, so the bar offers every one of them.
+   */
+  destination?: SkillDestination;
 }
 
 const ICONS: Record<SkillId, string> = {
@@ -57,5 +62,10 @@ export const assistantActions = (
     return [];
   }
 
-  return skillsFor(context).map(({ skill, prompt }) => ({ label: t(`assistant.action.${skill.id}`), icon: ICONS[skill.id], prompt }));
+  return skillsFor(context).map(({ skill, prompt }) => ({
+    label: t(`assistant.action.${skill.id}`),
+    icon: ICONS[skill.id],
+    prompt,
+    destination: skillDestination(skill, context),
+  }));
 };

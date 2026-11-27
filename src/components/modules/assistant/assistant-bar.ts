@@ -8,6 +8,8 @@ import { PopoverDesktop } from '../../utils/popover';
 import { onHover } from '../../utils/tooltip';
 import { promoteToTopLayer, removeFromTopLayer } from '../../utils/top-layer';
 
+import type { SkillDestination } from '../../../shared/skills';
+
 import type { AssistantAction } from './actions';
 import { gapSize, releaseGap, reserveGap } from './gap';
 import type { GapSide } from './gap';
@@ -240,6 +242,8 @@ export class AssistantBar {
   private side: GapSide = 'end';
   /** The bar's top at its spot in the page, before pinning it inside the window. */
   private homeTop = 0;
+  /** Where the running request's result goes; undefined for a prompt the user typed, whose aim the bar cannot know. */
+  private destination: SkillDestination | undefined;
   private thinkingView: AssistantThinkingView | null = null;
   private thinkingMenu: PopoverDesktop | null = null;
   private replyToken = 0;
@@ -654,10 +658,10 @@ export class AssistantBar {
 
   /**
    * The buttons under an empty field. Set them before open(), which measures the bar.
-   * @param actions - each button's label and the prompt it sends
+   * @param actions - each button's label, the prompt it sends, and where its result goes
    */
   public setActions(actions: readonly AssistantAction[]): void {
-    this.actions.replaceChildren(...actions.map(({ label, prompt, icon }, index) => {
+    this.actions.replaceChildren(...actions.map(({ label, prompt, icon, destination }, index) => {
       const button = build('button', { type: 'button', [ATTR.action]: '' });
 
       // Each one rises in a beat after the one before it.
@@ -671,6 +675,7 @@ export class AssistantBar {
       button.append(label);
       button.addEventListener('click', () => {
         if (!this.field.readOnly) {
+          this.destination = destination;
           this.callbacks.onSubmit(prompt);
         }
       });
@@ -787,11 +792,13 @@ export class AssistantBar {
     const { kind } = this.view;
     const working = kind === 'working';
     const actions = this.view.kind === 'answered' || this.view.kind === 'error' ? this.view.changed : false;
+    // Insert puts the reply into the page, which only a reply meant to stay in the bar needs.
+    const insertable = this.destination === undefined || this.destination === 'answer';
 
     this.summary.hidden = kind !== 'answered' || this.summary.textContent === '';
     this.alert.hidden = kind !== 'error' || this.alert.textContent === '';
     this.resume.hidden = this.view.kind !== 'error' || this.view.resumable !== true;
-    this.insert.hidden = this.view.kind !== 'answered' || this.view.edited || this.view.reply.trim() === '';
+    this.insert.hidden = !insertable || this.view.kind !== 'answered' || this.view.edited || this.view.reply.trim() === '';
     this.showActions(kind === 'prompt' && this.field.value === '' && this.actions.childElementCount > 0);
     this.head.hidden = this.summary.hidden && this.alert.hidden && this.approval.hidden && !actions;
     this.element.toggleAttribute(ATTR.followUp, !this.head.hidden);
@@ -902,6 +909,7 @@ export class AssistantBar {
       return;
     }
     this.field.value = '';
+    this.destination = undefined;
     this.sync();
     this.callbacks.onSubmit(prompt);
   }

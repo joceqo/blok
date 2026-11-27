@@ -40,6 +40,9 @@ describe('assistant bar: action buttons and Insert', () => {
   };
   const insert = (): HTMLElement => [...bar.element.querySelectorAll<HTMLElement>('button')]
     .find((button) => button.textContent === 'assistant.insert') ?? fail('no Insert button');
+  const send = (): HTMLElement => within(bar.element).getByRole('button', { name: 'assistant.send' });
+  const press = (label: string): void => fireEvent.click(within(group()).getByRole('button', { name: label }));
+  const answered = (): void => bar.render({ kind: 'answered', reply: 'The page is about water.', changed: false, edited: false });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -157,6 +160,40 @@ describe('assistant bar: action buttons and Insert', () => {
     bar.render({ kind: 'answered', reply: 'Shortened the text.', changed: true, edited: true });
 
     expect(insert().hidden).toBe(true);
+  });
+
+  it('offers Insert after an action whose answer stays in the bar', () => {
+    bar.setActions([{ label: 'Explain', prompt: 'Explain it.', destination: 'answer' }]);
+    press('Explain');
+    answered();
+
+    expect(insert().hidden).toBe(false);
+  });
+
+  it('offers no Insert after an action that replaces the selected text: its result belongs in that text', () => {
+    bar.setActions([{ label: 'Improve writing', prompt: 'Improve it.', destination: 'replaceSelection' }]);
+    press('Improve writing');
+    answered();
+
+    expect(insert().hidden).toBe(true);
+  });
+
+  it('offers no Insert after an action that writes in the page itself', () => {
+    bar.setActions([{ label: 'Continue writing', prompt: 'Continue.', destination: 'document' }]);
+    press('Continue writing');
+    answered();
+
+    expect(insert().hidden).toBe(true);
+  });
+
+  it('offers Insert again for a typed prompt after a replacing action: the user\'s own aim is unknown', () => {
+    bar.setActions([{ label: 'Improve writing', prompt: 'Improve it.', destination: 'replaceSelection' }]);
+    press('Improve writing');
+    type('What is this page about?');
+    fireEvent.click(send());
+    answered();
+
+    expect(insert().hidden).toBe(false);
   });
 
   it('offers no Insert for an empty answer, an error or while working', () => {
