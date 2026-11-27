@@ -6,11 +6,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it('sends workspace activity, page updates and digests by default, but never duplicates what Blok already shows', () => {
-  expect(readEmailNotification('always')).toBe(false);
-  expect(readEmailNotification('activity')).toBe(true);
-  expect(readEmailNotification('pageUpdates')).toBe(true);
-  expect(readEmailNotification('digest')).toBe(true);
+it('sends nothing until someone asks for it', () => {
+  // Mail leaves only on an explicit choice: nobody receives what they never
+  // turned on, and a fresh workspace stays quiet.
+  for (const name of ['always', 'activity', 'pageUpdates', 'digest'] as const) {
+    expect(readEmailNotification(name), name).toBe(false);
+  }
 });
 
 it('remembers a choice for the next launch and tells its readers at once', () => {

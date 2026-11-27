@@ -63,19 +63,20 @@ it('applies unread badge and pin switches to the mounted inbox, and reflects cha
   }
 });
 
-it('offers the four e-mail notification switches, keeps the always-send one off, and follows a choice made elsewhere', async () => {
+it('offers the four e-mail notification switches, all off until asked, and follows a choice made elsewhere', async () => {
   const host = document.createElement('div');
   document.body.append(host);
   const panel = mountShellNavigationSettings(host, {kind: 'notifications'});
   try {
     expect(switchNamed(host, 'Toujours envoyer des notifications par e-mail').getAttribute('aria-checked')).toBe('false');
-    expect(switchNamed(host, 'Activité dans mon espace de travail').getAttribute('aria-checked')).toBe('true');
-    expect(switchNamed(host, 'Modifications de pages').getAttribute('aria-checked')).toBe('true');
-    expect(switchNamed(host, 'Récapitulatif des activités de l’espace de travail').getAttribute('aria-checked')).toBe('true');
+    expect(switchNamed(host, 'Activité dans mon espace de travail').getAttribute('aria-checked')).toBe('false');
+    expect(switchNamed(host, 'Modifications de pages').getAttribute('aria-checked')).toBe('false');
+    expect(switchNamed(host, 'Récapitulatif des activités de l’espace de travail').getAttribute('aria-checked')).toBe('false');
+    // Off by default, so a click is what asks for the mail.
     switchNamed(host, 'Modifications de pages').click();
-    expect(readEmailNotification('pageUpdates')).toBe(false);
-    await vi.waitFor(() => expect(switchNamed(host, 'Modifications de pages').getAttribute('aria-checked')).toBe('false'));
-    setEmailNotification('digest', false);
-    await vi.waitFor(() => expect(switchNamed(host, 'Récapitulatif des activités de l’espace de travail').getAttribute('aria-checked')).toBe('false'));
+    expect(readEmailNotification('pageUpdates')).toBe(true);
+    await vi.waitFor(() => expect(switchNamed(host, 'Modifications de pages').getAttribute('aria-checked')).toBe('true'));
+    setEmailNotification('digest', true);
+    await vi.waitFor(() => expect(switchNamed(host, 'Récapitulatif des activités de l’espace de travail').getAttribute('aria-checked')).toBe('true'));
   } finally { panel.destroy(); }
 });

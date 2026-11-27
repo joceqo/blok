@@ -382,7 +382,7 @@ describe('settings discovery', () => {
     search.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
     expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Notifications');
     const row = must(document.querySelector('[data-setting="email-page-updates"][data-settings-highlight]'));
-    expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('false');
     } finally { fetch.mockRestore(); }
   });
 

@@ -6,8 +6,8 @@ const keys = {
   digest: 'blok:desktop:email-digest:v1',
 };
 export type EmailNotification = keyof typeof keys;
-// Ne doubler par e-mail ce que Blok affiche déjà se décide, le reste part sans rien demander.
-const defaults: Record<EmailNotification, boolean> = {activity: true, always: false, pageUpdates: true, digest: true};
+// Rien ne part sans un choix : personne ne reçoit un e-mail qu'il n'a pas demandé.
+const defaults: Record<EmailNotification, boolean> = {activity: false, always: false, pageUpdates: false, digest: false};
 const changes = new EventTarget();
 const session = new Map<EmailNotification, boolean>();
 
