@@ -106,3 +106,14 @@ describe('anneau de focus du shell', () => {
     expect(orphans, `thème sans anneau propre : ${orphans.join(' | ')}`).toEqual([]);
   });
 });
+
+/**
+ * La racine d'un portail Base UI n'est pas une boîte. Dans la barre du haut —
+ * une rangée flex avec un `gap` — elle comptait comme un enfant de plus et
+ * décalait les actions de huit pixels à chaque ouverture de menu.
+ */
+it('empêche une racine de portail d’occuper de la place', () => {
+  const shell = sheets.find((sheet) => sheet.path === 'shell.css')?.css ?? '';
+
+  expect(shell).toMatch(/\[data-base-ui-portal\]\s*\{[^}]*display:\s*contents/);
+});

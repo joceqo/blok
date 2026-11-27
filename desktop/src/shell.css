@@ -101,6 +101,11 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   border-bottom: 1px solid var(--desktop-border);
   background: var(--desktop-canvas); color: var(--desktop-ink);
 }
+/* La racine d'un portail n'est pas une boîte : elle ne doit rien occuper.
+   Posée dans la barre du haut, qui est une rangée flex avec un `gap`, elle
+   comptait comme un troisième enfant et décalait les actions de 8 px à
+   chaque ouverture de menu. */
+[data-base-ui-portal] { display: contents; }
 [data-desktop-page-identity] { display: flex; flex: 1; align-items: center; min-width: 0; font-size: 14px; }
 [data-desktop-page-breadcrumbs] { flex: 0 1 auto; min-width: 0; overflow: hidden; }
 [data-desktop-page-breadcrumbs] ol { display: flex; align-items: center; min-width: 0; margin: 0; padding: 0; list-style: none; }
