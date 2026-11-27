@@ -1,4 +1,4 @@
-import { beforeEach, expect, it } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { createCalendarStore, type CalendarEvent } from './calendar-store';
 
 const space = {kind: 'local', id: 'one', name: 'One'} as const;
@@ -21,4 +21,20 @@ it('refuses stale writes and deletions and keeps the newer value', async () => {
   await expect(store.save({...event, revision: 1})).rejects.toMatchObject({status: 409});
   await store.remove({...event, revision: 2});
   expect(await store.list(week[0], week[1])).toEqual([]);
+});
+
+it('answers an invitation through the workspace, and offers no answer without one', async () => {
+  const request = vi.fn().mockResolvedValue({ok: true, response: 'accepted'});
+  const store = createCalendarStore(
+    {kind: 'remote', server: 'https://blok.test', workspaceId: 'acme', accountId: 'me'} as never,
+    {request} as never,
+  );
+  await store.respond?.('event-1', 'accepted');
+  expect(request).toHaveBeenCalledWith(
+    '/api/workspaces/acme/calendar/events/event-1/response',
+    expect.objectContaining({method: 'PUT', body: JSON.stringify({response: 'accepted'})}),
+  );
+  // A local workspace has no organiser to tell: the store offers nothing.
+  const local = createCalendarStore({kind: 'local', id: 'solo'} as never);
+  expect(local.respond).toBeUndefined();
 });

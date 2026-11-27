@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
+import { recordCalendarResponse, validCalendarResponse } from './calendar-response.ts';
 import { deliverNotificationMails, type Notice } from './notification-mail.ts';
 import { inTransaction } from './bootstrap.ts';
 import { sessionDigest } from './session.ts';
@@ -62,13 +63,15 @@ export function calendarInput(id: string, raw: unknown) {
 }
 
 type Scope = Awaited<ReturnType<typeof readWorkspaceScope>>;
-type Row = { organizer_id:string | null; detached_private:boolean; participant_ids?: string[]; id: string; title: string; starts_at: Date; ends_at: Date; all_day: boolean; page_id: string | null; revision: number };
+type Row = { organizer_id:string | null; detached_private:boolean; participant_ids?: string[]; participant_responses?: Record<string,string> | null; id: string; title: string; starts_at: Date; ends_at: Date; all_day: boolean; page_id: string | null; revision: number };
 const columns = 'id,title,starts_at,ends_at,all_day,page_id,revision,organizer_id,detached_private';
 
 function eventData(row: Row) {
   const format = (date: Date) => row.all_day ? date.toISOString().slice(0, 10) : date.toISOString();
   return { id: row.id, title: row.title, start: format(row.starts_at), end: format(row.ends_at),
-    ...(row.participant_ids?.length && {participantIds: row.participant_ids}), allDay: row.all_day, pageId: row.page_id, revision: row.revision };
+    ...(row.participant_ids?.length && {participantIds: row.participant_ids}),
+    ...(row.participant_responses && {participantResponses: row.participant_responses}),
+    allDay: row.all_day, pageId: row.page_id, revision: row.revision };
 }
 
 async function visiblePages(db: PoolClient, scope: Scope) {
@@ -99,6 +102,26 @@ export function workspaceCalendar(pool: PgPool) {
     });
     return c.json({ok:true});
   });
+  router.put('/events/:id/response', bodyLimit({maxSize: 256}), async c => {
+    const body = await c.req.json().catch(() => undefined) as {response?: unknown} | undefined;
+    const response = validCalendarResponse(body?.response);
+    if (!response) throw new HTTPException(400, {message: 'Invalid response'});
+    let answered: {workspace: string; notices: Notice[]} | null = null;
+    const ok = await inTransaction(pool, async db => {
+      const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, true);
+      const notice = await recordCalendarResponse(db, scope.workspace_id, c.req.param('id')!, scope.user_id, response);
+      if (notice) answered = {workspace: scope.workspace_id, notices: [notice]};
+      // Only a participant has a row to update; anyone else gets a 404.
+      const {rowCount} = await db.query(
+        'SELECT 1 FROM calendar_participants WHERE workspace_id=$1 AND event_id=$2 AND user_id=$3',
+        [scope.workspace_id, c.req.param('id')!, scope.user_id]);
+      return rowCount > 0;
+    });
+    if (!ok) throw new HTTPException(404, {message: 'Not invited to this event'});
+    // Après le commit seulement : un e-mail ne doit pas annoncer une écriture annulée.
+    if (answered?.notices.length) await deliverNotificationMails(pool, answered.workspace, answered.notices);
+    return c.json({ok: true, response});
+  });
   router.get('/invitees', async c => {
     const members = await inTransaction(pool, async db => {
       const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, false);
@@ -115,7 +138,9 @@ export function workspaceCalendar(pool: PgPool) {
       const { from, to, fromDay, toDay } = calendarRange(c.req.query());
       const { rows } = await db.query<Row>(
         `SELECT ${columns}, ARRAY(SELECT p.user_id FROM calendar_participants p
-           WHERE p.workspace_id=e.workspace_id AND p.event_id=e.id ORDER BY p.user_id) AS participant_ids
+           WHERE p.workspace_id=e.workspace_id AND p.event_id=e.id ORDER BY p.user_id) AS participant_ids,
+         (SELECT jsonb_object_agg(p.user_id,p.response) FROM calendar_participants p
+           WHERE p.workspace_id=e.workspace_id AND p.event_id=e.id) AS participant_responses
          FROM workspace_calendar_events e WHERE workspace_id=$1 AND
           ((NOT all_day AND starts_at<$3 AND ends_at>$2) OR (all_day AND starts_at<$5 AND ends_at>$4))
          ORDER BY starts_at, ends_at, id`, [scope.workspace_id, from, to, fromDay, toDay]);

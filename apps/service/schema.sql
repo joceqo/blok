@@ -420,3 +420,19 @@ BEGIN
     INSERT INTO schema_migrations(version) VALUES(23);
   END IF;
 END $$;
+
+-- La réponse d'un invité, pour que l'organisateur puisse l'apprendre.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=24) THEN
+    ALTER TABLE calendar_participants ADD COLUMN response text NOT NULL DEFAULT 'needs-action'
+      CHECK (response IN ('needs-action','accepted','declined','tentative'));
+    ALTER TABLE workspace_notifications DROP CONSTRAINT workspace_notifications_type_check;
+    ALTER TABLE workspace_notifications ADD CONSTRAINT workspace_notifications_type_check CHECK (
+      (type IN ('join_requested','join_approved','join_rejected') AND actor_id IS NOT NULL AND page_id IS NULL AND comment_id IS NULL AND event_id IS NULL)
+      OR (type IN ('comment_mention','comment_reply') AND page_id IS NOT NULL AND comment_id IS NOT NULL AND event_id IS NULL)
+      OR (type IN ('calendar_invitation','calendar_response') AND event_id IS NOT NULL AND page_id IS NULL AND comment_id IS NULL)
+    );
+    INSERT INTO schema_migrations(version) VALUES(24);
+  END IF;
+END $$;

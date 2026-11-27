@@ -21,6 +21,9 @@ export interface CalendarStore {
   list(from: string, to: string): Promise<CalendarEvent[]>;
   save(event: CalendarEvent): Promise<void>;
   remove(event: CalendarEvent): Promise<void>;
+  /** Répondre à une invitation. Absent sans espace distant : il n'y a
+   *  alors ni organisateur à prévenir ni service pour l'écrire. */
+  respond?(eventId: string, response: 'needs-action' | 'accepted' | 'declined' | 'tentative'): Promise<void>;
 }
 
 function localDate(iso: string): string {
@@ -62,6 +65,10 @@ export function createCalendarStore(ref: WorkspaceRef, providedClient?: CloudCli
       },
       async remove(event) {
         await client.request(base + '/' + encodeURIComponent(event.id) + '?revision=' + encodeURIComponent(event.revision), {method: 'DELETE'});
+        notifyCalendarChanged();
+      },
+      async respond(eventId, response) {
+        await client.request(base + '/events/' + encodeURIComponent(eventId) + '/response', {method: 'PUT', body: JSON.stringify({response})});
         notifyCalendarChanged();
       },
     };
