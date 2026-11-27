@@ -190,32 +190,60 @@ interface EditPoint {
   sequence: bigint;
 }
 
+/** What reading an edit's body came to. */
+type EditBody =
+  /** The body as sent, which a lying Content-Length cannot make longer. */
+  | { bytes: Uint8Array }
+  /** Past this route's own cap, which it refuses in its own words. */
+  | { tooLarge: true }
+  /** Past the HOST's cap, which the body layer has already refused for itself. */
+  | { answered: true };
+
 /**
- * The edit body, read under a ceiling the body layer counts as it goes: a
- * lying Content-Length and a chunked body are both stopped at the same byte.
- * `undefined` is the refusal; anything else the read fails on leaves no bytes,
- * which the canonical reader names for itself.
+ * The edit body, counted as it is read — the way `readBody` counts it in
+ * `packages/server/go/internal/collab/collabhttp/edit.go`.
+ *
+ * The route does NOT lower the body layer's ceiling onto its own cap. That
+ * ceiling is the host's 30,000,000 bytes, and a request over it is the host's
+ * bare 413, written by the body layer itself; lowering it would make this
+ * route's refusal win over the host's on every body, and the host's would
+ * never be sent. So this cap is counted here instead, over bytes already read.
+ *
+ * Nothing is read past it, so the rest of the body stays on the wire — which
+ * is why the refusal ends the connection.
  */
-async function editBytes(request: Request): Promise<Uint8Array | undefined> {
-  request.setBodyLimit(MAX_APPEND_BYTES);
+async function editBytes(request: Request): Promise<EditBody> {
   const body = request.takeBody();
   if (!body) {
-    return new Uint8Array();
+    return { bytes: new Uint8Array() };
   }
   const chunks: Uint8Array[] = [];
-  try {
-    await body.readToEnd(chunks);
-  } catch (error) {
-    // The ceiling arrives as the enum value itself, not as an Error.
-    return error === BodyError.TooLarge ? undefined : new Uint8Array();
+  const chunk = new Uint8Array(16 << 10);
+  let total = 0;
+  for (;;) {
+    let read: number;
+    try {
+      read = await body.read(chunk);
+    } catch (error) {
+      // The ceiling arrives as the enum value itself, not as an Error.
+      // Anything else leaves no bytes, which the canonical reader names.
+      return error === BodyError.TooLarge ? { answered: true } : { bytes: new Uint8Array() };
+    }
+    if (read === 0) {
+      break;
+    }
+    if (total + read > MAX_APPEND_BYTES) {
+      return { tooLarge: true };
+    }
+    chunks.push(chunk.slice(0, read));
+    total += read;
   }
-  const total = chunks.reduce((sum, part) => sum + part.length, 0);
   const bytes = new Uint8Array(total);
   chunks.reduce((at, part) => {
     bytes.set(part, at);
     return at + part.length;
   }, 0);
-  return bytes;
+  return { bytes };
 }
 
 function acceptsJson(headers: Headers): boolean {
@@ -831,16 +859,21 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
       return;
     }
     const octets = await editBytes(request);
-    if (octets === undefined) {
+    if ('answered' in octets) {
+      // Past the host's own ceiling: the body layer wrote the bare refusal
+      // onto the wire and closed it. Nothing of this route's goes after it.
+      return;
+    }
+    if ('tooLarge' in octets) {
       // The read stopped at the cap, so the rest of the body is still on the
       // wire and nothing can be read off this connection after the refusal.
-      // Said out loud, or a client pools a socket the host is about to end
-      // and spends its next request on one that hangs up.
-      response.headersMut().set('Connection', 'close');
+      // Ended here, or a client pools a socket whose next request would be
+      // read out of the middle of that body.
+      await response.closeConnection();
       await refuse(request, response, 413, EDIT_TOO_LARGE);
       return;
     }
-    const parsed = canonicalEdit(octets);
+    const parsed = canonicalEdit(octets.bytes);
     if ('error' in parsed) {
       await refuse(request, response, 422, `${parsed.error}\n`);
       return;

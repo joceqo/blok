@@ -116,11 +116,24 @@ function fakeRequest(headers: Record<string, string>, body: string): Request {
     method: () => 'POST',
     headers: () => bag,
     setBodyLimit: () => {},
-    takeBody: () => ({
-      readToEnd: async (chunks: Uint8Array[]) => {
-        chunks.push(bytes);
-      },
-    }),
+    takeBody: () => {
+      // The door reads in chunks and counts as it goes, so the double has to
+      // drain the same way: one hand-off, then end-of-body.
+      let sent = false;
+
+      return {
+        read: async (into: Uint8Array) => {
+          if (sent) return 0;
+          sent = true;
+          into.set(bytes);
+
+          return bytes.length;
+        },
+        readToEnd: async (chunks: Uint8Array[]) => {
+          chunks.push(bytes);
+        },
+      };
+    },
   } as unknown as Request;
 }
 

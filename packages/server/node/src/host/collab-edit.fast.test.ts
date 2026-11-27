@@ -63,6 +63,8 @@ describe('the edit route on the Node host', () => {
   /**
    * One request written onto a real socket, which is the only way to send a
    * header name twice: the in-process kit folds a repeated name into one line.
+   * A caller that writes its own Content-Length keeps it, so a request may
+   * promise more body than it sends.
    */
   async function raw(host: HostAppOptions, lines: string[], body = ''): Promise<ParsedHttpResponse> {
     const shared = new Shared(createHostHandler(host), defaultConfig());
@@ -80,7 +82,14 @@ describe('the edit route on the Node host', () => {
       client.once('connect', () => ready());
       client.once('error', failed);
     });
-    const head = [...lines, `Content-Length: ${body.length}`, 'Connection: close', '', ''].join('\r\n');
+    const framed = lines.some((line) => /^content-length:/i.test(line));
+    const head = [
+      ...lines,
+      ...(framed ? [] : [`Content-Length: ${body.length}`]),
+      'Connection: close',
+      '',
+      '',
+    ].join('\r\n');
     client.write(head + body);
     const bytes = await answered;
     client.destroy();
@@ -147,11 +156,33 @@ describe('the edit route on the Node host', () => {
       .toEqual([428, 'If-Match needs the operation journal, and this server keeps none\n']);
   });
 
+  /**
+   * Over a socket, not the in-process kit: that kit hands the whole body to
+   * the inbound buffer in one chunk, and the buffer tops out at 64 KiB, so a
+   * body of this size only ever reaches the host over the wire.
+   */
   it('reads no more than one megabyte of edit', async () => {
-    const tooBig = new Uint8Array(MAX_APPEND_BYTES + 1).fill(0x20);
-    const answer = await post({ [KEY]: 'e4' }, tooBig);
+    const over = await raw(options, [...REQUEST, `${KEY}: e4`], ' '.repeat(MAX_APPEND_BYTES + 1));
+    const at = await raw(options, [...REQUEST, `${KEY}: e4a`], ' '.repeat(MAX_APPEND_BYTES));
 
-    expect([answer.status, answer.body]).toEqual([413, 'an edit request is at most 1048576 bytes\n']);
+    expect([over.status, over.body]).toEqual([413, 'an edit request is at most 1048576 bytes\n']);
+    // The cap is the largest edit there is, not the first one refused: a body
+    // of exactly that many bytes is read, and refused for what it says.
+    expect([at.status, at.body]).toEqual([422, 'collab: the request body is not valid JSON.\n']);
+  });
+
+  /**
+   * The host caps every request body at 30,000,000 bytes, and this route must
+   * not lower that ceiling out from under it: a body over the HOST's cap is
+   * the host's own bare refusal, not this route's wording. Lowering the cap
+   * first is what hid it — the route's refusal would win on every body, and
+   * the one the host owes a caller over its ceiling would never be sent.
+   */
+  it('leaves a body past the host\'s own ceiling to the host, which refuses it bare', async () => {
+    const answer = await raw(options, [...REQUEST, `${KEY}: e10`, 'Content-Type: application/json',
+      'Content-Length: 30000001']);
+
+    expect([answer.status, answer.body, answer.headers['content-length']]).toEqual([413, '', ['0']]);
   });
 
   it('ends the connection it refused an oversized edit on, instead of leaving the rest on the wire', async () => {
