@@ -237,7 +237,7 @@ function WorkspaceName({initial, rename}: {initial: string; rename(name: string)
     }
   }
 
-  return <div className="settings-panel-row" data-setting="workspace-name">
+  return <div className="settings-panel-stack" data-setting="workspace-name">
     <div className="settings-panel-label">
       <strong>{shellText("Nom de l’espace de travail")}</strong>
       <small>{shellText("Jusqu’à 120 caractères. Tout le monde le voit dans la barre latérale.")}</small>
@@ -251,9 +251,11 @@ function WorkspaceName({initial, rename}: {initial: string; rename(name: string)
         event.preventDefault();
         void save();
       }}/>
-    <button type="button" data-desktop-settings-copy="" disabled={!changed || saving} onClick={() => void save()}>
+    {/* Le bouton n'apparaît qu'avec quelque chose à enregistrer : un bouton
+        éteint en permanence sous un champ ne dit rien à personne. */}
+    {changed && <button type="button" data-desktop-settings-copy="" disabled={saving} onClick={() => void save()}>
       {shellText("Enregistrer")}
-    </button>
+    </button>}
   </div>;
 }
 
@@ -276,14 +278,16 @@ function WorkspaceIcon({value, write, name}: NonNullable<General['icon']> & {nam
     });
   }
 
-  return <div className="settings-panel-row" data-setting="workspace-icon">
+  return <div className="settings-panel-stack" data-setting="workspace-icon">
     <div className="settings-panel-label">
       <strong>{shellText("Icône")}</strong>
       <small>{shellText("Choisissez une icône ou un émoji, ou chargez une image. Elle apparaît dans la barre latérale.")}</small>
       {notice && <small role="status">{notice}</small>}
     </div>
-    <TeamspaceIconPicker value={icon} name={name} onChange={choose}
-      label={shellText("Modifier l’icône de l’espace")}/>
+    <div className="settings-panel-icon">
+      <TeamspaceIconPicker value={icon} name={name} onChange={choose}
+        label={shellText("Modifier l’icône de l’espace")}/>
+    </div>
   </div>;
 }
 
@@ -351,12 +355,12 @@ function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, ma
     <h1 data-desktop-settings-title="">{shellText("Général")}</h1>
     <p data-desktop-settings-intro="">{shellText("Gérez le nom de votre espace de travail et retrouvez ses informations.")}</p>
     <Section title={shellText("Espace de travail")}>
-      {icon && <WorkspaceIcon {...icon} name={workspace}/>}
       {rename
         ? <WorkspaceName initial={workspace} rename={rename}/>
         : <dl className="settings-panel-values">
             <div data-setting="workspace-name"><dt>{shellText("Nom de l’espace")}</dt><dd>{workspace}</dd></div>
           </dl>}
+      {icon && <WorkspaceIcon {...icon} name={workspace}/>}
       <dl className="settings-panel-values">
         <div data-setting="hosting"><dt>{shellText("Hébergement")}</dt><dd>{remoteServer ? shellText("Serveur distant") : shellText("Sur cet appareil")}</dd></div>
       </dl>

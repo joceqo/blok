@@ -43,3 +43,10 @@ html[data-desktop-high-contrast] .settings-panel-switch:focus-visible { outline-
 
 .settings-notification-status { margin: 0; padding-block: 4px; font-size: 13px; line-height: 20px; color: var(--desktop-muted); }
 .settings-panel-switch:disabled { opacity: .5; cursor: default; }
+
+/* Une rangée empilée : l'intitulé, son explication, puis le contrôle dessous
+   sur sa propre ligne. C'est la forme des réglages qui portent une saisie,
+   là où `.settings-panel-row` convient aux interrupteurs et aux listes. */
+.settings-panel-stack { display: grid; justify-items: start; gap: 10px; padding-block: 16px; }
+.settings-panel-stack input[data-blok-field] { width: 100%; max-width: 580px; box-sizing: border-box; }
+.settings-panel-icon { font-size: 34px; }

@@ -13,6 +13,9 @@ function mount(panel: Parameters<typeof mountSettingsPanel>[1]) {
 const button = (host: HTMLElement, text: string): HTMLButtonElement =>
   must([...host.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === text));
 
+const find = (host: HTMLElement, text: string): HTMLButtonElement | undefined =>
+  [...host.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === text);
+
 /** React garde un cache de la valeur : écrire `.value` directement l'endort. */
 function type(field: HTMLInputElement, value: string): void {
   const write = must(Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set, 'value setter');
@@ -56,14 +59,13 @@ it('renames the workspace once the name actually changed, and says so', async ()
   try {
     const field = must(host.querySelector<HTMLInputElement>('[data-desktop-settings-workspace-name]'));
     expect(field.value).toBe('Nexenture');
-    // Rien à enregistrer tant que le nom est le même : le bouton reste fermé.
-    expect(button(host, 'Enregistrer').disabled).toBe(true);
+    // Rien à enregistrer tant que le nom est le même : le bouton n'est pas là.
+    expect(find(host, 'Enregistrer')).toBeUndefined();
     type(field, '  Jardin  ');
-    expect(button(host, 'Enregistrer').disabled).toBe(false);
     button(host, 'Enregistrer').click();
     expect(rename).toHaveBeenCalledWith('Jardin');
     await vi.waitFor(() => expect(host.textContent).toContain('Nom enregistré'));
-    expect(button(host, 'Enregistrer').disabled).toBe(true);
+    expect(find(host, 'Enregistrer')).toBeUndefined();
   } finally { panel.destroy(); }
 });
 
@@ -73,7 +75,7 @@ it('refuses an empty name without calling the server', () => {
   try {
     const field = must(host.querySelector<HTMLInputElement>('[data-desktop-settings-workspace-name]'));
     type(field, '   ');
-    expect(button(host, 'Enregistrer').disabled).toBe(true);
+    expect(find(host, 'Enregistrer')).toBeUndefined();
     expect(rename).not.toHaveBeenCalled();
   } finally { panel.destroy(); }
 });
@@ -87,7 +89,8 @@ it('keeps the typed name and explains itself when the server refuses', async () 
     button(host, 'Enregistrer').click();
     await vi.waitFor(() => expect(host.textContent).toContain('Le nom n’a pas pu être enregistré.'));
     expect(field.value).toBe('Jardin');
-    expect(button(host, 'Enregistrer').disabled).toBe(false);
+    // Le bouton reste offert : la correction est à un clic, pas à retaper.
+    expect(find(host, 'Enregistrer')).toBeDefined();
   } finally { panel.destroy(); }
 });
 
@@ -177,5 +180,13 @@ it('puts the former icon back when the server refuses the new one', async () => 
     // ressemblent trop pour prouver quoi que ce soit toutes seules.
     await vi.waitFor(() => expect(host.textContent).toContain('L’icône n’a pas pu être enregistrée.'));
     expect(iconTrigger(host).textContent).toBe('🌱');
+  } finally { panel.destroy(); }
+});
+
+it('puts the name before the icon, the way Notion reads top to bottom', () => {
+  const {host, panel} = mount({...base, rename: vi.fn(), icon: {value: '', write: vi.fn()}});
+  try {
+    const order = [...host.querySelectorAll<HTMLElement>('[data-setting]')].map(node => node.dataset.setting);
+    expect(order.slice(0, 2)).toEqual(['workspace-name', 'workspace-icon']);
   } finally { panel.destroy(); }
 });
