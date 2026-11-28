@@ -854,10 +854,14 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       const remote = currentWorkspace.kind === 'remote' && !onDevice ? currentWorkspace : undefined;
       // Le ref porte le slug ; l'identifiant que le support demande vit dans la session.
       const slug = remote?.workspaceId;
-      // Trois mondes à distinguer : un espace distant qu'on administre, un
-      // espace sur le disque, et tout le reste — où il n'y a rien à écrire.
+      // Quatre mondes à distinguer : un espace distant qu'on administre, un
+      // espace sur le disque, l'espace que le serveur intégré sert ici — et
+      // tout le reste, où il n'y a rien à écrire.
       const managed = remote && client && admin && slug ? {remote, client, slug} : undefined;
       const onDisk = currentWorkspace.kind === 'local' ? currentWorkspace : undefined;
+      // Celui du serveur intégré porte le genre « remote », mais il ne vit que
+      // sur cet appareil : son habit n'a pas de serveur distant où aller.
+      const onBoard = currentWorkspace.kind === 'remote' && currentWorkspace.embedded === true ? currentWorkspace : undefined;
       const patch = (body: Record<string, unknown>) => managed
         ? managed.client.request(`/api/workspaces/${encodeURIComponent(managed.slug)}`, {method: 'PATCH', body: JSON.stringify(body)})
         : Promise.reject(new Error('Espace non administré'));
@@ -879,9 +883,12 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
           value: managed.client.currentSession?.workspaces.find((space) => space.slug === managed.slug)?.icon ?? '',
           write: async (icon) => { await patch({icon}); dressWorkspace(managed.remote, icon); },
         };
-        if (onDisk) return {
-          value: onDisk.icon ?? '',
-          write: async (icon) => { dressWorkspace(onDisk, icon); },
+        // Le registre de l'appareil retient l'icône des espaces que personne
+        // d'autre ne sert, et la référence la retrouve au démarrage suivant.
+        const here = onDisk ?? onBoard;
+        if (here) return {
+          value: here.icon ?? '',
+          write: async (icon) => { dressWorkspace(here, icon); },
         };
         return undefined;
       }

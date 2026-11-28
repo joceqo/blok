@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {must} from './test-helpers';
 import {revealSetting} from './settings-search';
 import { WORKSPACE_ROLES } from './access-vocabulary';
-import { rememberWorkspace, workspaceKey, type RemoteWorkspace } from './workspace-registry';
+import { listWorkspaces, rememberWorkspace, workspaceKey, type RemoteWorkspace } from './workspace-registry';
 import { applyAppearance, createDesktopFooter, readAppearance } from './settings';
 
 const childUi = vi.hoisted(() => ({
@@ -549,5 +549,51 @@ describe('workspace mark in the sidebar', () => {
     const pick = await vi.waitFor(() => must(document.querySelector<HTMLButtonElement>('.team-icon-grid button')));
     pick.click();
     await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).not.toBe('🌱'));
+  });
+});
+
+describe('icon of a workspace this device serves alone', () => {
+  afterEach(() => history.replaceState(null, '', '/'));
+
+  /**
+   * L'espace du serveur intégré porte le genre « remote », mais rien ne vit
+   * ailleurs que sur cet appareil : il doit pouvoir s'habiller comme un
+   * espace sur disque.
+   */
+  const device: RemoteWorkspace = {kind: 'remote', embedded: true, device: true, id: 'own', name: 'Mes documents',
+    server: 'http://127.0.0.1:53002', accountId: 'device', workspaceId: 'maison', userName: 'Profil local', role: 'admin'};
+
+  function footerFor(ref: RemoteWorkspace) {
+    const host = document.createElement('div');
+    host.setAttribute('data-desktop-footer', '');
+    document.body.append(host);
+    rememberWorkspace(ref);
+    localStorage.setItem('blok:desktop:active-workspace:v1', workspaceKey(ref));
+    const footer = createDesktopFooter(() => undefined, ref, undefined, {footerHost: host});
+    document.body.append(footer);
+    return {host, footer};
+  }
+
+  it('offers the picker on the device workspace, and the registry keeps what it chose', async () => {
+    const {host, footer} = footerFor(device);
+    footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: 'general'}));
+    const panel = must(document.querySelector<HTMLElement>('[data-desktop-settings-content]'));
+    // Sans serveur distant à qui la confier, l'icône n'avait tout simplement
+    // pas de sélecteur : une absence muette, sans message ni grisé.
+    must(panel.querySelector<HTMLButtonElement>('.team-icon-trigger')).click();
+    const pick = await vi.waitFor(() => must(document.querySelector<HTMLButtonElement>('.team-icon-grid button')));
+    pick.click();
+    const chosen = await vi.waitFor(() => {
+      const stored = listWorkspaces().find(ref => workspaceKey(ref) === workspaceKey(device))?.icon;
+      expect(stored).toBeTruthy();
+      return must(stored);
+    });
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).not.toBe('M'));
+    expect(chosen).not.toBe('');
+  });
+
+  it('wears the remembered icon when the workspace opens again', async () => {
+    const {host} = footerFor({...device, icon: '🌱'});
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).toBe('🌱'));
   });
 });
