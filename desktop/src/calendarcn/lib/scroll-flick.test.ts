@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceFlick,
   flickSteps,
+  bufferSteps,
   flickLimit,
   horizontalWheelDelta,
   isDetentWheel,
@@ -14,13 +15,6 @@ import {
 const COLUMN = 150;
 const VISIBLE_DAYS = 7;
 const PAGE = COLUMN * VISIBLE_DAYS;
-
-/** Runs a whole gesture through the tracker */
-const swipe = (steps: number[]) =>
-  steps.reduce(
-    (state, delta) => advanceFlick(state, delta, COLUMN, VISIBLE_DAYS),
-    restingFlick,
-  );
 
 describe('horizontalWheelDelta', () => {
   it('follows a trackpad swipe sideways and lets a vertical one through', () => {
@@ -53,40 +47,62 @@ describe('isDetentWheel', () => {
 });
 
 describe('advanceFlick', () => {
-  it('follows the fingers pixel for pixel', () => {
-    expect(swipe([-40, -60, -50]).offset).toBe(-150);
-    expect(swipe([-40, 60]).offset).toBe(20);
+  /** Runs a whole gesture, collecting what it travelled on the way */
+  const swipe = (steps: number[]) =>
+    steps.reduce(
+      (run, delta) => {
+        const step = advanceFlick(run.state, delta, COLUMN);
+        return { state: step.state, travelled: run.travelled + step.travelNow };
+      },
+      { state: restingFlick, travelled: 0 },
+    );
+
+  it('follows the fingers pixel for pixel, within a column', () => {
+    const run = swipe([-40, -60, -30]);
+    expect(run.state.offset).toBe(-130);
+    expect(run.travelled).toBe(0);
+    expect(swipe([-40, 60]).state.offset).toBe(20);
   });
 
-  it('keeps following past a page, with the give of a rubber band', () => {
-    const past = swipe([-PAGE - 200]);
-    expect(past.offset).toBeLessThan(-PAGE);
-    // It gives, rather than running away with the momentum
-    expect(past.offset).toBeGreaterThan(-PAGE - COLUMN);
+  it('travels each whole column as it is crossed, and keeps the rest', () => {
+    const run = swipe([-COLUMN - 50]);
+    expect(run.travelled).toBe(1);
+    // What is left is the part of the next column being crossed
+    expect(run.state.offset).toBe(-50);
   });
 
-  it('never gives more than a column, so the drawn buffer stays a fixed size', () => {
-    // A second of macOS momentum asks for eighteen thousand pixels
+  it('goes as far as it is pushed, and never stops at a wall', () => {
+    // A second of macOS momentum. It used to be held as one shift, drawn in
+    // full, and that is what made the grid stutter.
     const long = swipe(Array.from({ length: 60 }, () => -300));
-    expect(long.offset).toBeGreaterThanOrEqual(-PAGE - COLUMN);
-    expect(swipe([PAGE * 40]).offset).toBeLessThanOrEqual(PAGE + COLUMN);
+    expect(long.travelled).toBe(120);
+    const longer = swipe(Array.from({ length: 90 }, () => -300));
+    expect(longer.travelled).toBeGreaterThan(long.travelled);
+  });
+
+  it('never holds a shift of a whole column, however far the gesture goes', () => {
+    for (const run of [swipe([-9000]), swipe([9000]), swipe(Array.from({ length: 40 }, () => 230))]) {
+      expect(Math.abs(run.state.offset)).toBeLessThan(COLUMN);
+    }
+  });
+
+  it('travels back the way it came', () => {
+    expect(swipe([COLUMN * 3 + 10]).travelled).toBe(-3);
   });
 });
 
 describe('releaseFlick', () => {
   it('lands on the nearest column, and back where it started below half of one', () => {
-    expect(releaseFlick(swipe([-200]), COLUMN, VISIBLE_DAYS)).toBe(1);
-    expect(releaseFlick(swipe([-70]), COLUMN, VISIBLE_DAYS)).toBe(0);
-    expect(releaseFlick(swipe([-520]), COLUMN, VISIBLE_DAYS)).toBe(3);
-    expect(releaseFlick(swipe([160]), COLUMN, VISIBLE_DAYS)).toBe(-1);
+    expect(releaseFlick({ offset: -120 }, COLUMN)).toBe(1);
+    expect(releaseFlick({ offset: -70 }, COLUMN)).toBe(0);
+    expect(releaseFlick({ offset: 120 }, COLUMN)).toBe(-1);
   });
+});
 
-  it('travels a page at the most, whatever the momentum asked for', () => {
-    // This is the June-to-November swipe: sixty momentum events, 18000px
-    const flick = swipe(Array.from({ length: 60 }, () => -300));
-    expect(flickSteps(flick.travelled, COLUMN)).toBeGreaterThan(100);
-    expect(releaseFlick(flick, COLUMN, VISIBLE_DAYS)).toBe(VISIBLE_DAYS);
-    expect(releaseFlick(swipe([PAGE * 9]), COLUMN, VISIBLE_DAYS)).toBe(-VISIBLE_DAYS);
+describe('bufferSteps', () => {
+  it('is small and fixed: a rebased gesture never asks it to grow', () => {
+    expect(bufferSteps(VISIBLE_DAYS)).toBeLessThanOrEqual(2);
+    expect(bufferSteps(1)).toBeGreaterThanOrEqual(1);
   });
 });
 

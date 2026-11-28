@@ -41,7 +41,6 @@ import type {
   HourSlot,
   NewEventRange,
   TimeGridProps,
-  TimeGridView,
   TimeZoneAxisColumn,
   WeekDay,
 } from "./week-view-types";
@@ -88,12 +87,6 @@ interface ExtraAxisColumn extends TimeZoneAxisColumn {
   /** The time its zone's clock shows at each hour row, in order */
   hourLabels: string[];
 }
-
-/** Buffer days per view mode (each side, for horizontal scroll) */
-const BUFFER_DAYS_BY_VIEW: Record<TimeGridView, number> = {
-  day: 1,
-  week: 7,
-};
 
 /** Days the day view moves when a drag or resize is held at its side edge */
 const DAY_VIEW_EDGE_NAV_DAYS = 7;
@@ -287,7 +280,16 @@ export function TimeGrid({
     !showWeekends && edgeNavigationStep === DAYS_PER_WEEK
       ? WEEKDAYS_PER_WEEK
       : edgeNavigationStep;
-  const BUFFER_DAYS = BUFFER_DAYS_BY_VIEW[view];
+  /**
+   * Columns one navigation step covers. A full week view re-anchors on the
+   * first day of the week, so stepping a single day there lands back on the
+   * same Monday; it moves by whole weeks instead. Every other day count shows
+   * a rolling range, where a day is a day.
+   */
+  const navigationStride =
+    view === "week" && edgeNavigationStep === DAYS_PER_WEEK
+      ? edgeNavigationDays
+      : 1;
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const dayColumnsScrollRef = React.useRef<HTMLDivElement>(null);
   const allDayScrollRef = React.useRef<HTMLDivElement>(null);
@@ -479,13 +481,25 @@ export function TimeGrid({
     reportView({ view, numberOfDays: fixedNumberOfDays });
   }, [view, fixedNumberOfDays, reportView]);
 
+  /**
+   * The date navigation is counted from. A rebased gesture travels several
+   * columns before React has re-rendered any of them, and each of those would
+   * otherwise count from the same stale date and overwrite the last.
+   */
+  const navigatedFrom = React.useRef(currentDate);
+  React.useEffect(() => {
+    navigatedFrom.current = currentDate;
+  }, [currentDate]);
+
   // Both move by columns: over the weekend while it is hidden
   const handleNavigate = React.useCallback(
     (daysDelta: number) => {
       scrollNavigatedRef.current = true;
-      goToDate(addShownDays(currentDate, daysDelta, showWeekends));
+      const next = addShownDays(navigatedFrom.current, daysDelta, showWeekends);
+      navigatedFrom.current = next;
+      goToDate(next);
     },
-    [currentDate, showWeekends, goToDate],
+    [showWeekends, goToDate],
   );
 
   const handleDragNavigate = React.useCallback(
@@ -590,6 +604,7 @@ export function TimeGrid({
       containerRef: scrollContainerRef,
       dayColumnWidth,
       visibleDays: VISIBLE_DAYS,
+      navStep: navigationStride,
       onNavigate: handleNavigate,
       disabled:
         dragState?.isDragging ||
@@ -624,7 +639,7 @@ export function TimeGrid({
   // gesture travels further than a page and a column, so there is nothing
   // left for a buffer to grow for, and growing it mid-swipe regenerated every
   // column and every recurring event on the way — a stutter the viewer felt.
-  const dynamicBuffer = Math.max(BUFFER_DAYS, bufferSteps(VISIBLE_DAYS));
+  const dynamicBuffer = bufferSteps(navigationStride);
   const totalDays = dynamicBuffer + VISIBLE_DAYS + dynamicBuffer;
 
   // The days the grid draws: the visible ones, and the buffer around them

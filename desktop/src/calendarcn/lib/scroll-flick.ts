@@ -1,34 +1,28 @@
 /**
  * One scroll gesture over a calendar that pages: the week grid sideways by
  * columns of days, the month grid downwards by rows of weeks. A "step" is one
- * of those, and a "page" is the ones on screen.
+ * of those.
  *
- * The grid follows the fingers one pixel for one pixel, which is what makes
- * the gesture feel like the calendar is being dragged. What it must not do is
- * take the momentum for travel: a trackpad does not stop when the fingers
- * leave it, and macOS keeps sending events for over a second. Adding all of
- * them to one jump, with no cap, sent the calendar from June to November on a
- * single swipe, and grew the grid's buffer to a hundred and fifty columns on
- * the way.
+ * The grid follows the fingers one pixel for one pixel and never stops at a
+ * wall: a gesture goes as far as it is pushed. What it must not do is hold
+ * the whole journey as one shift and draw every day of it — that is what grew
+ * the buffer to a hundred and fifty columns mid-swipe, regenerating every
+ * column and every recurring event on the way, and made a brisk swipe stutter.
  *
- * So the gesture is capped where it is not felt — in how far it travels — and
- * left alone where it is: past a page, the grid still follows, with the give
- * of a rubber band rather than a wall.
+ * So the gesture is rebased instead: every whole step it crosses is travelled
+ * at once and taken out of the shift, which therefore stays under one step.
+ * The grid draws a small, fixed buffer, and the calendar moves continuously
+ * under the fingers.
  */
 
 /** A line of a wheel that reports its steps in lines (`deltaMode` 1) */
 const LINE_DELTA_PX = 16;
 
-/** How much of each pixel past a page the grid still follows */
-const RUBBER_BAND = 0.15;
-
 /**
- * The furthest the grid goes past a page, in steps. The buffer it draws is
- * sized once from this, so no gesture can make it grow — growing it mid-swipe
- * meant regenerating every column and every recurring event on the way, which
- * is what turned a brisk swipe into a stutter.
+ * Steps the grid draws on each side of the visible ones. A gesture is rebased
+ * every whole step, so its shift never reaches one and this never has to grow.
  */
-const MAX_GIVE_STEPS = 1;
+const BUFFER_STEPS = 2;
 
 /** The pixels one of a wheel event's steps stands for */
 function wheelUnit(deltaMode: number, pageWidth: number): number {
@@ -45,16 +39,21 @@ export interface WheelLike {
   shiftKey: boolean;
 }
 
-/** Where a gesture stands */
+/** Where a gesture stands, between two steps */
 export interface FlickState {
-  /** Everything the gesture has asked for, momentum included */
-  travelled: number;
-  /** Pixels the grid is shifted by: the above, with give past a page */
+  /** Pixels the grid is shifted by. Always less than one step. */
   offset: number;
 }
 
+/** What one wheel event does */
+export interface FlickStep {
+  state: FlickState;
+  /** Steps to travel now: the whole ones this event crossed */
+  travelNow: number;
+}
+
 /** No gesture under way */
-export const restingFlick: FlickState = { travelled: 0, offset: 0 };
+export const restingFlick: FlickState = { offset: 0 };
 
 /**
  * The sideways pixels a wheel event asks for, or `null` when it is a vertical
@@ -91,7 +90,7 @@ export function isDetentWheel(event: WheelLike): boolean {
   return event.shiftKey || event.deltaMode !== 0;
 }
 
-/** A page of steps: as far as one gesture travels, however long it runs */
+/** A page of steps: what a wheel reporting in pages (`deltaMode` 2) asks for */
 export function flickLimit(stepSize: number, pageSteps: number): number {
   return Math.max(1, pageSteps) * Math.max(0, stepSize);
 }
@@ -101,56 +100,33 @@ export function flickSteps(offset: number, stepSize: number): number {
   return stepSize > 0 ? -Math.round(offset / stepSize) : 0;
 }
 
-/** Past a page, each pixel still moves the grid, by less and less of itself */
-function withGive(
-  travelled: number,
-  limit: number,
-  stepSize: number,
-): number {
-  if (limit <= 0 || Math.abs(travelled) <= limit) return travelled;
-  const past = Math.abs(travelled) - limit;
-  const give = Math.min(past * RUBBER_BAND, stepSize * MAX_GIVE_STEPS);
-  return Math.sign(travelled) * (limit + give);
-}
-
 /** Steps the grid draws on each side of the visible ones, a fixed number */
 export function bufferSteps(pageSteps: number): number {
-  return Math.max(1, pageSteps) + MAX_GIVE_STEPS;
+  return Math.max(1, Math.min(pageSteps, BUFFER_STEPS));
 }
 
-/** Takes one wheel event into the gesture */
+/**
+ * Takes one wheel event into the gesture.
+ *
+ * Whole steps are handed back to be travelled at once rather than held: the
+ * shift that remains is always under one step, so the grid never has to draw
+ * further than its buffer however far the gesture goes.
+ */
 export function advanceFlick(
   state: FlickState,
   deltaPx: number,
   stepSize: number,
-  pageSteps: number,
-): FlickState {
-  const travelled = state.travelled + deltaPx;
-  return {
-    travelled,
-    offset: withGive(
-      travelled,
-      flickLimit(stepSize, pageSteps),
-      stepSize,
-    ),
-  };
+): FlickStep {
+  const offset = state.offset + deltaPx;
+  if (stepSize <= 0) return { state: { offset }, travelNow: 0 };
+  // Whole steps only: what is left is the part of a step still being crossed
+  const travelNow = Math.trunc(-offset / stepSize);
+  return { state: { offset: offset + travelNow * stepSize }, travelNow };
 }
 
-/**
- * The steps to travel once the wheel goes quiet.
- *
- * Capped at the columns on screen. Everything past that is momentum the
- * fingers never asked for, and letting it through is what sent the calendar
- * months away from a flick.
- */
-export function releaseFlick(
-  state: FlickState,
-  stepSize: number,
-  pageSteps: number,
-): number {
-  const days = flickSteps(state.travelled, stepSize);
-  const limit = Math.max(1, pageSteps);
-  return Math.min(Math.max(days, -limit), limit);
+/** The last step to travel once the wheel goes quiet, nearest to where it stopped */
+export function releaseFlick(state: FlickState, stepSize: number): number {
+  return flickSteps(state.offset, stepSize);
 }
 
 /**

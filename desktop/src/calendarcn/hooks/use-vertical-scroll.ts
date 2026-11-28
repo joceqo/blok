@@ -157,7 +157,7 @@ export function useVerticalScroll({
         restTimer.current = null;
         const gesture = flick.current;
         flick.current = restingFlick;
-        snapAndNavigate(releaseFlick(gesture, rowHeight, visibleRows));
+        snapAndNavigate(releaseFlick(gesture, rowHeight));
       }, SCROLL_END_DEBOUNCE_MS);
     };
 
@@ -196,9 +196,11 @@ export function useVerticalScroll({
       if (pendingSnap.current) flushSnap();
       setIsScrolling(true);
 
-      // The grid follows the fingers, pixel for pixel, with give past a page
-      flick.current = advanceFlick(flick.current, -delta, rowHeight, visibleRows);
-      setScrollOffset(flick.current.offset);
+      // Whole rows crossed are travelled at once, so the shift stays under one
+      const step = advanceFlick(flick.current, -delta, rowHeight);
+      flick.current = step.state;
+      if (step.travelNow !== 0) onNavigateRef.current(step.travelNow);
+      setScrollOffset(step.state.offset);
       waitForQuiet();
     };
 

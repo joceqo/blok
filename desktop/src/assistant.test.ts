@@ -29,6 +29,45 @@ describe('desktop AI trigger', () => {
   });
 });
 
+describe('desktop AI trigger outside a page', () => {
+  /** The shell the button lives in, in the view the workspace is showing */
+  const shellShowing = (mode?: string) => {
+    const shell = document.createElement('div');
+    if (mode) shell.setAttribute(mode, '');
+    return shell;
+  };
+
+  it('stays away from the views that have no page to ask about', async () => {
+    const panel = document.createElement('div');
+    panel.hidden = true;
+    const button = createAssistantButton(() => {});
+    const shell = shellShowing('data-calendar-mode');
+    const observer = bindAssistantButton(button, panel, shell);
+
+    expect(button.hidden).toBe(true);
+
+    // Back on a page, it is offered again
+    shell.removeAttribute('data-calendar-mode');
+    await Promise.resolve();
+    expect(button.hidden).toBe(false);
+
+    shell.setAttribute('data-library-mode', '');
+    await Promise.resolve();
+    expect(button.hidden).toBe(true);
+    observer.disconnect();
+  });
+
+  it('is offered on a page, as it always was', () => {
+    const panel = document.createElement('div');
+    panel.hidden = true;
+    const button = createAssistantButton(() => {});
+    const observer = bindAssistantButton(button, panel, shellShowing());
+
+    expect(button.hidden).toBe(false);
+    observer.disconnect();
+  });
+});
+
 describe('desktop AI request', () => {
   it('sends cancellation to Tauri for the active CLI process', async () => {
     const previous = (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;

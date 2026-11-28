@@ -57,14 +57,6 @@ import type { MonthViewProps } from "./week-view-types";
 import type { MonthWeekRow } from "../lib/event-utils";
 
 /** Base buffer rows on each side (extends dynamically with scroll distance) */
-const BUFFER_ROWS = 2;
-
-/**
- * Rows one gesture travels at the most: a month, near enough. The buffer is
- * sized from it, and every row of it is drawn on every frame of the gesture,
- * so a generous cap is paid for in dropped frames rather than in reach.
- */
-const SCROLL_ROWS_PER_GESTURE = 4;
 
 interface ContextMenuState {
   x: number;
@@ -239,20 +231,31 @@ export function MonthView({
 
   const scrollNavigatedRef = useRef(false);
 
+  /**
+   * The date navigation is counted from. A rebased gesture crosses several
+   * rows before React has re-rendered any of them, and each of those would
+   * otherwise count from the same stale date and overwrite the last.
+   */
+  const navigatedFrom = useRef(currentDate);
+  useEffect(() => {
+    navigatedFrom.current = currentDate;
+  }, [currentDate]);
+
   const handleScrollNavigate = useCallback(
     (rowsDelta: number) => {
       scrollNavigatedRef.current = true;
-      const newDate = addWeeks(currentDate, rowsDelta);
+      const newDate = addWeeks(navigatedFrom.current, rowsDelta);
+      navigatedFrom.current = newDate;
       goToDate(newDate);
     },
-    [currentDate, goToDate],
+    [goToDate],
   );
 
   const { scrollOffset, slideOffset, isAnimating, triggerSlideAnimation } =
     useVerticalScroll({
       containerRef: scrollContainerRef,
       rowHeight,
-      visibleRows: SCROLL_ROWS_PER_GESTURE,
+      visibleRows: MONTH_VIEW_ROWS,
       onNavigate: handleScrollNavigate,
       disabled: isDragging || isResizing || isDrawing,
     });
@@ -323,7 +326,7 @@ export function MonthView({
   // travels further than a page and a row, so there is nothing left for a
   // buffer to grow for, and growing it mid-scroll rebuilt every week row on
   // the way — which is what made three years of months stutter.
-  const dynamicBuffer = Math.max(BUFFER_ROWS, bufferSteps(SCROLL_ROWS_PER_GESTURE));
+  const dynamicBuffer = bufferSteps(MONTH_VIEW_ROWS);
 
   // Build buffered week rows: dynamicBuffer above + MONTH_VIEW_ROWS + dynamicBuffer below
   const bufferedWeekRows = useMemo(() => {

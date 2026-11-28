@@ -109,16 +109,33 @@ export function createAssistantButton(onClick: () => void): HTMLButtonElement {
   return button;
 }
 
-export function bindAssistantButton(button: HTMLButtonElement, panel: HTMLElement): MutationObserver {
+/**
+ * Views the workspace shows instead of a page. The assistant asks about the
+ * page it is on, so there is nothing for it to open onto in any of them.
+ */
+const PAGELESS_VIEWS = ['data-calendar-mode', 'data-library-mode'];
+
+/**
+ * Keeps the floating launcher in step with the panel, and with the view the
+ * workspace is showing: it is offered on a page, and nowhere else.
+ */
+export function bindAssistantButton(
+  button: HTMLButtonElement,
+  panel: HTMLElement,
+  shell?: HTMLElement,
+): MutationObserver {
+  const onAPage = (): boolean =>
+    !shell || !PAGELESS_VIEWS.some(view => shell.hasAttribute(view));
   const sync = (): void => {
     const expanded = !panel.hidden;
-    button.toggleAttribute('hidden', expanded);
+    button.toggleAttribute('hidden', expanded || !onAPage());
     button.setAttribute('aria-expanded', String(expanded));
     button.setAttribute('aria-label', expanded ? shellText("Fermer l’assistant IA") : shellText("Ouvrir l’assistant IA"));
     button.setAttribute('title', expanded ? shellText("Fermer l’assistant IA") : shellText("Assistant IA"));
   };
   const observer = new MutationObserver(sync);
   observer.observe(panel, { attributes: true, attributeFilter: ['hidden', 'data-blok-agent-mode'] });
+  if (shell) observer.observe(shell, { attributes: true, attributeFilter: PAGELESS_VIEWS });
   sync();
   return observer;
 }

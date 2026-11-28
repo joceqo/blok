@@ -15,8 +15,14 @@ import { usePrefersReducedMotion } from "./use-media-query";
 interface UseHorizontalScrollOptions {
   containerRef: React.RefObject<HTMLDivElement | null>;
   dayColumnWidth: number;
-  /** Day columns on screen: the furthest one gesture travels */
+  /** Day columns on screen */
   visibleDays: number;
+  /**
+   * Columns the view moves in one step. A week view that re-anchors on the
+   * first day of the week moves by whole weeks: stepping a single day there
+   * is pulled straight back to the same Monday, or past it.
+   */
+  navStep?: number;
   onNavigate: (daysDelta: number) => void;
   disabled?: boolean;
 }
@@ -37,6 +43,7 @@ export function useHorizontalScroll({
   containerRef,
   dayColumnWidth,
   visibleDays,
+  navStep = 1,
   onNavigate,
   disabled,
 }: UseHorizontalScrollOptions): UseHorizontalScrollReturn {
@@ -144,6 +151,9 @@ export function useHorizontalScroll({
     const container = containerRef.current;
     if (!container) return;
 
+    /** Columns one navigation step covers */
+    const stride = Math.max(1, navStep);
+
     /** The gesture is over once the wheel has been quiet, momentum included */
     const waitForQuiet = () => {
       if (restTimer.current) clearTimeout(restTimer.current);
@@ -151,7 +161,7 @@ export function useHorizontalScroll({
         restTimer.current = null;
         const gesture = flick.current;
         flick.current = restingFlick;
-        snapAndNavigate(releaseFlick(gesture, dayColumnWidth, visibleDays));
+        snapAndNavigate(releaseFlick(gesture, dayColumnWidth * stride) * stride);
       }, SCROLL_END_DEBOUNCE_MS);
     };
 
@@ -173,7 +183,7 @@ export function useHorizontalScroll({
         if (restTimer.current) clearTimeout(restTimer.current);
         restTimer.current = null;
         flick.current = restingFlick;
-        snapAndNavigate(Math.sign(delta));
+        snapAndNavigate(Math.sign(delta) * stride);
         return;
       }
 
@@ -181,14 +191,14 @@ export function useHorizontalScroll({
       if (pendingSnap.current) flushSnap();
       setIsScrolling(true);
 
-      // The grid follows the fingers, pixel for pixel, with give past a page
-      flick.current = advanceFlick(
-        flick.current,
-        -delta,
-        dayColumnWidth,
-        visibleDays,
-      );
-      setScrollOffset(flick.current.offset);
+      // The grid follows the fingers, pixel for pixel. Whole columns it
+      // crosses are travelled at once, so the shift it holds stays under one
+      // and the gesture goes as far as it is pushed without ever drawing
+      // further than the buffer.
+      const step = advanceFlick(flick.current, -delta, dayColumnWidth * stride);
+      flick.current = step.state;
+      if (step.travelNow !== 0) onNavigateRef.current(step.travelNow * stride);
+      setScrollOffset(step.state.offset);
       waitForQuiet();
     };
 
@@ -204,6 +214,7 @@ export function useHorizontalScroll({
     containerRef,
     dayColumnWidth,
     visibleDays,
+    navStep,
     disabled,
     snapAndNavigate,
     flushSnap,
