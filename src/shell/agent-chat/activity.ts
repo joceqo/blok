@@ -14,6 +14,7 @@ export const createChatActivity = (label: string, running = true): ChatActivityH
   element.setAttribute('aria-live', 'polite');
   element.setAttribute('aria-atomic', 'true');
   text.setAttribute('data-blok-chat-activity-text', '');
+  text.classList.toggle('shimmer', running);
   text.textContent = label;
   element.toggleAttribute('data-running', running);
   element.append(text);
@@ -21,6 +22,6 @@ export const createChatActivity = (label: string, running = true): ChatActivityH
   return {
     element,
     setLabel: (next) => { text.textContent = next; },
-    setRunning: (next) => { element.toggleAttribute('data-running', next); },
+    setRunning: (next) => { element.toggleAttribute('data-running', next); text.classList.toggle('shimmer', next); },
   };
 };

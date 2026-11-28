@@ -213,7 +213,8 @@ export const Providers: Story = {
     await userEvent.click(openButton);
     const panel = canvas.getByRole('dialog', { name: 'Assistant IA' });
 
-    await userEvent.click(within(panel).getByRole('button', { name: 'Réglages de l\'assistant IA' }));
+    await userEvent.click(within(panel).getByRole('button', { name: 'Options du chat' }));
+    await userEvent.click(within(panel).getByRole('menuitem', { name: 'Réglages' }));
 
     const dialog = await waitFor(() => canvas.getByRole('dialog', { name: 'Paramètres' }));
 

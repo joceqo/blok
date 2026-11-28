@@ -8,7 +8,7 @@ pub(crate) struct PendingPageLink(Mutex<Option<String>>);
 pub(crate) fn opened(app: &tauri::AppHandle, urls: &[tauri::Url]) {
     let Some(url) = urls.iter().rev().find(|url| {
         matches!(url.as_str(), "blok://calendar" | "blok://calendar/") ||
-            (url.scheme() == "blok" && url.host_str() == Some("page") && url.as_str().len() <= 2048)
+            (url.scheme() == "blok" && matches!(url.host_str(), Some("page" | "chat")) && url.as_str().len() <= 2048)
     }) else { return };
     if let Ok(mut pending) = app.state::<PendingPageLink>().0.lock() {
         *pending = Some(url.to_string());

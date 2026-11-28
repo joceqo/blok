@@ -593,6 +593,8 @@ describe('current English catalog lifecycle coverage', () => {
       // +3: the link field calls its three refusal reasons (tools.link.invalidSpaces, invalidUnsafe, invalidKind) by literal.
       // -1: tools.database.groupWeekOf, now that a week group reads Intl's day range; still shipped.
       // +2: Card preview's Page properties group and Page content hint call their tools.database.galleryCardPreview* keys by literal.
+      // +3 new literals: assistant.insertAtTop, tools.code.showFilename and tools.image.downloadFailed.
+      // +2 moved from registered: the code toolbar calls tools.code.wrapLines and the audio cover picker calls tools.audio.coverUpload.
       'executable-literal': 2269,
       // +10: the tabs block calls its 9 tools.tabs.* keys and toolbox.preview.tabs by literal.
       // toolNames.page moved here from finite-dynamic when the page-reference picker called it directly.
@@ -603,7 +605,7 @@ describe('current English catalog lifecycle coverage', () => {
       // +1: toolNames.askAi, the Ask AI inline tool's titleKey.
       // +6: the thinking menu's assistant.thinking.<level> labels.
       // +1: the Table view toolbox entry's toolNames.tableView (toolNames.mapView is a literal: the seeded map view's name).
-      // +11: the Ask AI action labels, assistant.action.<skill id>.
+      // +9: the original Ask AI action labels, assistant.action.<skill id>.
       // +1: toolNames.databaseFullPage (f6d462a0).
       // +2: the picker's tools.page.moreResults_one/_other, a plural of one literal call.
       // +2: a11y.blocksConvertedTo_one/_other, a plural of the multi-block Turn into call.

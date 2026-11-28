@@ -57,6 +57,10 @@ const STANDALONE_CSS_ENTRIES = [
     reason: 'Dev-page history edits list and Updates feed styles, imported by src/playground/history-changes.ts and updates-feed.ts alone — never reachable from main.css.',
   },
   {
+    file: 'src/shell/agent-chat/styles.css',
+    reason: 'Styles for the host chat composer, messages and activity, imported by the shell and stories.',
+  },
+  {
     file: 'src/shell/agent-assistant.css',
     reason: 'Host assistant chrome, imported by src/shell/agent-assistant.ts alone — never reachable from main.css.',
   },

@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { arch, homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,11 +40,13 @@ const weedVersion = '4.55';
 const nodeName = 'node-v' + nodeVersion + '-' + target.node;
 const pgName = 'postgresql-' + pgVersion + '-' + target.pg;
 const gitName = 'dugite-native-v2.56.1-238326e-' + target.git + '.tar.gz';
+const vectorVersion = '0.8.7';
 const artifacts = [
   { name: nodeName + '.tar.gz', url: 'https://nodejs.org/dist/v' + nodeVersion + '/' + nodeName + '.tar.gz', sha256: target.nodeDigest },
   { name: pgName + '.tar.gz', url: 'https://github.com/theseus-rs/postgresql-binaries/releases/download/' + pgVersion + '/' + pgName + '.tar.gz', sha256: target.pgDigest },
   { name: 'seaweedfs-' + weedVersion + '-' + target.weed + '.tar.gz', url: 'https://github.com/seaweedfs/seaweedfs/releases/download/' + weedVersion + '/' + target.weed + '.tar.gz', sha256: target.weedDigest },
   { name: 'seaweedfs-' + weedVersion + '-LICENSE', url: 'https://raw.githubusercontent.com/seaweedfs/seaweedfs/' + weedVersion + '/LICENSE', sha256: 'd789d433cc11da163273d1e39be2e8fa67642f9a58ef220d3f258fa9c14ef613' },
+  { name:'pgvector-'+vectorVersion+'.tar.gz', url:'https://codeload.github.com/pgvector/pgvector/tar.gz/refs/tags/v'+vectorVersion, sha256:'cac0b10c360f05b2d521200105ba3697e773d4cd3731f5a915a7e37ebe0bea85' },
   { name:gitName, url:'https://github.com/desktop/dugite-native/releases/download/v2.56.1/'+gitName, sha256:target.gitDigest },
 ];
 
@@ -79,7 +81,7 @@ try {
   const pg = join(ready, 'postgres');
   const licenses = join(ready, 'licenses');
   for (const dir of [bin, pg, licenses]) await mkdir(dir, { recursive: true });
-  const [nodeTar, pgTar, weedTar, weedLicense] = await Promise.all(artifacts.map(download));
+  const [nodeTar, pgTar, weedTar, weedLicense, vectorTar] = await Promise.all(artifacts.map(download));
   run('tar', ['-xzf', nodeTar, '-C', work, nodeName + '/bin/node', nodeName + '/LICENSE']);
   await copyFile(join(work, nodeName, 'bin/node'), join(bin, 'node'));
   await copyFile(join(work, nodeName, 'LICENSE'), join(licenses, 'Nodejs-LICENSE'));
@@ -88,7 +90,26 @@ try {
   const weedNotices = await readFile(join(root, 'desktop/runtime/licenses/seaweedfs-' + weedVersion + '-NOTICES.txt.gz'));
   await writeFile(join(licenses, 'SeaweedFS-NOTICES.txt'), gunzipSync(weedNotices));
   // Preserve the distribution's libraries, dynamic modules, relative symlinks and data layout.
-  run('tar', ['-xzf', pgTar, '-C', work, ...['bin/initdb', 'bin/postgres', 'bin/pg_ctl', 'lib', 'share', 'COPYRIGHT', 'LICENSE', 'dependency-notices'].map(entry => pgName + '/' + entry)]);
+  run('tar', ['-xzf', pgTar, '-C', work, ...['include', 'bin/pg_config', 'bin/initdb', 'bin/postgres', 'bin/pg_ctl', 'lib', 'share', 'COPYRIGHT', 'LICENSE', 'dependency-notices'].map(entry => pgName + '/' + entry)]);
+  const distribution = join(work, pgName);
+  const vectorSource = join(work, 'pgvector-' + vectorVersion);
+  run('tar', ['-xzf', vectorTar, '-C', work]);
+  const flags = platform() === 'darwin' ? '-O2 -mmacosx-version-min=15.0' : '-O2 -fPIC';
+  run('make', ['-j4', 'PG_CONFIG=' + join(distribution,'bin/pg_config'), 'CC=' + (process.env.CC || 'cc'),
+    'with_llvm=no', 'OPTFLAGS=', 'CFLAGS='+flags, 'CPPFLAGS=', 'LDFLAGS='], {cwd:vectorSource});
+  const module = platform() === 'darwin' ? 'vector.dylib' : 'vector.so';
+  const pgDirectory = flag => {
+    const result = spawnSync(join(distribution,'bin/pg_config'),[flag],{encoding:'utf8'});
+    if (result.status !== 0 || !result.stdout.trim().startsWith(distribution+'/')) throw new Error('Invalid PostgreSQL directory: '+flag);
+    return result.stdout.trim();
+  };
+  await copyFile(join(vectorSource,module),join(pgDirectory('--pkglibdir'),module));
+  const extension = join(pgDirectory('--sharedir'),'extension');
+  await copyFile(join(vectorSource,'vector.control'),join(extension,'vector.control'));
+  for (const sql of await readdir(join(vectorSource,'sql'))) {
+    if (sql.startsWith('vector--') && sql.endsWith('.sql')) await copyFile(join(vectorSource,'sql',sql),join(extension,sql));
+  }
+  await copyFile(join(vectorSource,'LICENSE'),join(licenses,'pgvector-LICENSE'));
   for (const part of ['bin', 'lib', 'share']) await rename(join(work, pgName, part), join(pg, part));
   for (const part of ['COPYRIGHT', 'LICENSE', 'dependency-notices']) await rename(join(work, pgName, part), join(licenses, 'PostgreSQL-' + part));
   for (const part of ['LICENSE', 'NOTICE']) await copyFile(join(root, part), join(licenses, 'Blok-' + part));
@@ -103,7 +124,7 @@ try {
   for (const [name, args] of [[join(bin, 'node'), ['--version']], [join(pg, 'bin/initdb'), ['--version']], [join(pg, 'bin/postgres'), ['--version']], [join(bin, 'weed'), ['version']], [join(bin, 'node'), [join(ready, 'room/room.mjs'), '--help']]]) {
     run(name, args, { env, cwd: work });
   }
-  await writeFile(join(ready, 'runtime-manifest.json'), JSON.stringify({ platform: targetName, nodeVersion, postgresVersion: pgVersion, seaweedfsVersion: weedVersion, artifacts }, null, 2) + '\n');
+  await writeFile(join(ready, 'runtime-manifest.json'), JSON.stringify({ platform: targetName, nodeVersion, postgresVersion: pgVersion, pgvectorVersion: vectorVersion, seaweedfsVersion: weedVersion, artifacts }, null, 2) + '\n');
   // Tauri overwrites its staging files on the next build, preserving source modes.
   run('chmod', ['-R', 'u+w', ready]);
   const previous = join(work, 'previous');

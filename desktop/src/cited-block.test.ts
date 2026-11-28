@@ -57,6 +57,21 @@ describe('cited block navigation', () => {
     expect(host.navigate).toHaveBeenCalledWith('report');
   });
 
+  it('waits for a cited block delivered after the remote editor mounts', async () => {
+    const page = fakeEditor(['target']);
+    const container = document.createElement('div');
+    const getById = page.editor.blocks.getById;
+    page.editor.blocks.getById = id => container.childElementCount ? getById(id) : null;
+    const navigator = createCitedBlockNavigator({...fakeHost(), remoteCanvas:container});
+    navigator.open('report','target');
+    navigator.pageMounted('report',page.editor);
+    await page.mount();
+    expect(page.setToBlock).not.toHaveBeenCalled();
+    container.append(document.createElement('div'));
+    await Promise.resolve();
+    expect(page.setToBlock).toHaveBeenCalledWith('target','start');
+  });
+
   it('défile tout de suite quand la page citée est déjà ouverte', async () => {
     const page = fakeEditor(['cited']);
     const host = fakeHost('report', page.editor);

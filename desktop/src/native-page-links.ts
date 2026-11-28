@@ -1,8 +1,9 @@
+import { chatOwner, parseChatLink, pendingChat } from './chat-link';
 import { diskPageWorkspace } from './disk-page-link';
 import { calendarUrl } from './calendar-route';
 import { deviceWorkspaces, nativeBridge } from './native-runtime';
 import { parsePageLink } from './page-link';
-import { activeWorkspace, selectStartupPage, selectWorkspace } from './workspace-registry';
+import { activateWorkspace, activeWorkspace, listWorkspaces, selectStartupPage, selectWorkspace, workspaceKey } from './workspace-registry';
 import { workspaceRepository } from './workspace-repository';
 
 /** Only the OS bridge can deliver an external request. Device credentials never leave its own API. */
@@ -17,6 +18,19 @@ export async function listenForPageLinks(report: (error: unknown) => void): Prom
       const url = calendarUrl(new URL(location.href));
       if (starting) history.replaceState(null, '', url);
       else if (window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}))) location.assign(url.href);
+      return;
+    }
+    const chatId = parseChatLink(raw);
+    if (chatId) {
+      const owner = chatOwner(chatId);
+      const target = owner && listWorkspaces().find(ref => workspaceKey(ref) === owner);
+      if (!target) throw new Error('Discussion introuvable sur cet appareil.');
+      if (!starting && workspaceKey(activeWorkspace()) === owner &&
+          !window.dispatchEvent(new CustomEvent('blok:open-linked-chat', {detail: chatId, cancelable: true}))) return;
+      if (!starting) await (await import('./shell')).flushDesktop();
+      sessionStorage.setItem(pendingChat, chatId);
+      if (starting) activateWorkspace(target);
+      else selectWorkspace(target);
       return;
     }
     const link = parsePageLink(raw);

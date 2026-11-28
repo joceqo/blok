@@ -6,9 +6,9 @@ import { isEscapeConsumed } from '../components/utils/consumed-escape';
  */
 
 import type { AgentModel, AgentModelMessage, AgentModelResponse } from '../../types/api';
-import blokMascot from '../../docs/public/logo-no-sign.png';
-import { createChatActivity, createChatComposer, createChatMessage, createChatSuggestions, type ChatSuggestion } from './agent-chat';
-import { chatIcon, type ChatIcon } from './agent-chat/icons';
+import { attachmentContext, attachmentImages, type ChatAttachment } from './agent-chat/attachments';
+import { createChatComposer } from './agent-chat/composer';
+import { mountPanelView, type Conversation, type ChatStep, type PanelMode, type Turn } from './agent-chat/panel';
 import './agent-chat/styles.css';
 import { createCliAgentModel, inspectCli, providerLabel, type CliCommand, type CliStatus } from './agent-model';
 import { readAgentSettings, subscribeAgentSettings } from './agent-settings';
@@ -16,7 +16,18 @@ import './agent-assistant.css';
 
 export interface AgentAssistantProvider { id: string; label: string }
 
+interface LinkedChat {
+  id: string;
+  turns: Pick<Turn, 'question' | 'answer' | 'label' | 'sources'>[];
+}
+
 export interface AgentAssistantOptions {
+  acceptAttachments?: boolean;
+  chatLinks?: {
+    copy(chat: LinkedChat): Promise<void>;
+    save(chat: LinkedChat): void;
+    read(id: string): LinkedChat | undefined;
+  };
   onOpenChange?(open: boolean): void;
   workspaceSearch?: {
     find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string; blockId?: string}[]>;
@@ -24,8 +35,9 @@ export interface AgentAssistantOptions {
     open(id: string, blockId?: string): void;
   };
   editPage?: { available(): boolean; open(): void };
-  /** Visible text of the open page, included when "Cette page" is checked. */
+  /** Visible text of the currently open page, read when the question is sent. */
   getPageText: () => string;
+  getPageTitle?: () => string;
   /** Closes the panel, then the host opens provider settings. */
   openSettings: () => void;
   /** Host-specific provider inspection, e.g. Tauri's native CLI bridge. */
@@ -53,43 +65,10 @@ export interface AgentAssistantHandle {
   refreshProviders: () => Promise<void>;
 }
 
-type PanelMode = 'side' | 'floating' | 'full';
-
-interface Turn {
-  question: string;
-  sources?: {id: string; title: string; blockId?: string}[];
-  sent: string;
-  command: string;
-  label: string;
-  answer: string;
-  pending: boolean;
-  error?: boolean;
-  cancelled?: boolean;
-  status?: string;
-}
-
-interface Conversation {
-  id: string;
-  turns: Turn[];
-  draft?: string;
-}
-
 const MODE_KEY = 'blok.shell.agent.panel-mode';
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 720;
 const START_WIDTH = 392;
-
-const SUGGESTIONS: readonly ChatSuggestion[] = [
-  { id: 'summary', label: 'Résumer cette page', icon: 'summary' },
-  { id: 'insight', label: 'Trouver les points clés', icon: 'insight' },
-  { id: 'question', label: 'Que manque-t-il dans cette page ?', icon: 'question' },
-];
-
-const MODES: readonly { id: PanelMode; label: string }[] = [
-  { id: 'side', label: 'Panneau latéral' },
-  { id: 'floating', label: 'Fenêtre flottante' },
-  { id: 'full', label: 'Plein écran' },
-];
 
 const SYSTEM = [
   'You are the writing assistant beside a Blok page.',
@@ -136,6 +115,14 @@ const answerOf = (response: AgentModelResponse): string => response.content
   .join('\n')
   .trim();
 
+const NO_PASSAGE = 'Je n’ai trouvé aucun passage pertinent dans les pages de cet espace auxquelles vous avez accès.';
+const INSUFFICIENT = 'Les passages consultés ne donnent pas assez d’informations pour répondre à cette question.';
+const SEARCH_INSTRUCTIONS = [
+  'Answer only from the current page and numbered excerpts in the supplied data.',
+  'For each claim from an excerpt, cite its number in square brackets, like [2].',
+  'A shared topic alone is insufficient. If the evidence does not answer the question, return only INSUFFICIENT_EVIDENCE.',
+].join(' ');
+
 const runningLabel = (label: string): string => `${label} répond…`;
 const isCliCommand = (id: string): id is CliCommand => id === 'codex' || id === 'claude';
 
@@ -146,12 +133,6 @@ const makeButton = (label: string): HTMLButtonElement => {
   node.textContent = label;
 
   return node;
-};
-
-const iconButton = (node: HTMLButtonElement, label: string, icon: ChatIcon): void => {
-  node.setAttribute('aria-label', label);
-  node.setAttribute('title', label);
-  node.replaceChildren(chatIcon(icon));
 };
 
 /**
@@ -167,65 +148,53 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   const body = document.createElement('div');
   const editorSlot = document.createElement('div');
   const panel = document.createElement('div');
-  const header = document.createElement('div');
-  const title = document.createElement('h2');
-  const titleIcon = document.createElement('img');
-  const historyButton = makeButton('Nouvelle conversation');
-  const freshButton = makeButton('Nouvelle conversation');
-  const modeButton = makeButton('Changer le mode du chat');
-  const settingsButton = makeButton('Réglages de l\'assistant IA');
-  const closeButton = makeButton('Fermer');
-  const historyMenu = document.createElement('div');
-  const historySearch = document.createElement('input');
-  const historyRows = document.createElement('div');
-  const emptyHistory = document.createElement('p');
+  const viewHost = document.createElement('div');
+  viewHost.className = 'blok-chat-view';
+  const view = mountPanelView(viewHost);
   let returnFocus: HTMLElement | null = null;
-  const modeMenu = document.createElement('div');
-  const transcript = document.createElement('div');
-  const composerSlot = document.createElement('div');
-  const providerHint = document.createElement('p');
-  const fullSuggestions = document.createElement('div');
+  let providerHint = '';
+  let linkNotice = '';
+  let noticeTimer: ReturnType<typeof setTimeout>;
+  const linked = new Set<string>();
+  const snapshot = (chat: Conversation): LinkedChat => ({
+    id: chat.id,
+    turns: chat.turns.filter(t => !t.pending && !t.cancelled && !t.error).map(({question, answer, label, sources}) => ({question, answer, label, sources})),
+  });
   const resize = document.createElement('div');
   const session = {
     open: false,
     mode: readMode(),
     width: START_WIDTH,
-    menu: null as 'history' | 'mode' | null,
+    historyOpen: false,
     conversations: [{ id: crypto.randomUUID(), turns: [] }] as Conversation[],
     active: 0,
     picked: null as string | null,
     providers: [] as AgentAssistantProvider[],
     destroyed: false,
     statuses: [] as CliStatus[],
-    includePage: true,
     run: null as AbortController | null,
     token: { id: 0 },
     inspect: null as AbortController | null,
   };
   const composerHandle = createChatComposer({
+    acceptAttachments: options.acceptAttachments,
     providers: [],
-    includePage: session.includePage,
     sendLabel: 'Envoyer à l\'assistant IA',
-    onSend: (message, provider, includePage) => {
+    onSend: (message, provider, attachments) => {
       if (!session.providers.some((item) => item.id === provider)) return;
       session.picked = provider;
-      session.includePage = includePage;
-      send(message);
+      send(message, false, attachments);
     },
     onStop: () => { stopRun(); render(); },
     onProviderChange: (provider) => {
       if (!session.providers.some((item) => item.id === provider)) return;
       session.picked = provider; options.onProviderSelected?.(provider);
     },
-    onContextChange: (includePage) => { session.includePage = includePage; },
   });
   composerHandle.field.addEventListener('input', () => {
     const conversation = current();
     if (conversation) conversation.draft = composerHandle.field.value;
   });
-  const composer = composerHandle.element;
-  const sendButton = composerHandle.submit;
-
   shell.setAttribute('data-blok-agent-shell', '');
   bar.setAttribute('data-blok-agent-bar', '');
   toggle.setAttribute('data-blok-agent-toggle', '');
@@ -244,65 +213,7 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-labelledby', titleId);
   panel.setAttribute('hidden', '');
-  header.setAttribute('data-blok-agent-header', '');
-  title.id = titleId;
-  title.textContent = 'Assistant IA';
-  titleIcon.src = blokMascot;
-  titleIcon.alt = '';
-  titleIcon.setAttribute('data-blok-agent-title-icon', '');
-  iconButton(historyButton, 'Historique', 'history');
-  iconButton(freshButton, 'Nouvelle conversation', 'plus');
-  iconButton(modeButton, 'Changer le mode du chat', 'panel');
-  iconButton(settingsButton, 'Réglages de l\'assistant IA', 'settings');
-  iconButton(closeButton, 'Fermer', 'close');
-  historyButton.setAttribute('data-blok-agent-history', '');
-  historyButton.setAttribute('aria-haspopup', 'dialog');
-  historyButton.setAttribute('aria-expanded', 'false');
-  freshButton.setAttribute('data-blok-agent-new', '');
-  modeButton.setAttribute('aria-haspopup', 'menu');
-  modeButton.setAttribute('aria-expanded', 'false');
-  historyMenu.setAttribute('data-blok-agent-menu', 'history');
-  historyMenu.id = panelId + '-history';
-  historyButton.setAttribute('aria-controls', historyMenu.id);
-  historyMenu.setAttribute('role', 'dialog');
-  historyMenu.setAttribute('aria-label', 'Historique des conversations');
-  historySearch.type = 'search';
-  historySearch.setAttribute('aria-label', 'Rechercher une conversation');
-  historySearch.placeholder = 'Rechercher une conversation';
-  historySearch.autocomplete = 'off';
-  historyRows.setAttribute('data-blok-agent-history-list', '');
-  emptyHistory.setAttribute('role', 'status');
-  emptyHistory.textContent = 'Aucune conversation trouvée.';
-  historyMenu.append(historySearch,historyRows,emptyHistory);
-  historyMenu.setAttribute('hidden', '');
-  modeMenu.setAttribute('data-blok-agent-menu', 'mode');
-  modeMenu.setAttribute('role', 'menu');
-  modeMenu.setAttribute('hidden', '');
-  transcript.setAttribute('data-blok-agent-transcript', '');
-  composerSlot.setAttribute('data-blok-agent-composer', '');
-  providerHint.setAttribute('data-blok-agent-providers-empty', '');
-  providerHint.textContent = 'Connecte et active un provider dans les réglages.';
-  providerHint.hidden = true;
-  const editPage = makeButton('Modifier la page avec OpenAI');
-  editPage.textContent = 'Modifier la page avec OpenAI';
-  editPage.setAttribute('data-blok-agent-edit-page', '');
-  const refreshPageActions = (): void => {
-    editPage.hidden = !options.editPage?.available() || !session.providers.some(provider => provider.id.startsWith('openai:'));
-  };
-  editPage.hidden = true;
-  composerSlot.append(composer, providerHint);
-  const searchWorkspace = document.createElement('input');
-  searchWorkspace.type = 'checkbox';
-  if (options.workspaceSearch) {
-    const label = document.createElement('label');
-    label.setAttribute('data-blok-workspace-search', '');
-    label.append(searchWorkspace, ' Inclure les pages correspondantes de l’espace');
-    composerSlot.append(label);
-  }
-  if (options.editPage) composerSlot.append(editPage);
-  fullSuggestions.setAttribute('data-blok-agent-suggestions', '');
-  fullSuggestions.hidden = true;
-  sendButton.setAttribute('data-blok-agent-send', '');
+  composerHandle.submit.setAttribute('data-blok-agent-send', '');
   resize.setAttribute('data-blok-agent-resize', '');
   resize.setAttribute('role', 'separator');
   resize.setAttribute('aria-orientation', 'vertical');
@@ -310,30 +221,10 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   resize.setAttribute('aria-valuemin', String(MIN_WIDTH));
   resize.setAttribute('aria-valuemax', String(MAX_WIDTH));
   resize.tabIndex = 0;
-  header.append(titleIcon, title, historyButton, freshButton, modeButton, settingsButton, closeButton, historyMenu, modeMenu);
-  panel.append(resize, header, transcript, composerSlot, fullSuggestions);
+  panel.append(resize, viewHost);
   body.append(editorSlot, panel);
   bar.append(toggle);
   shell.append(bar, body);
-
-  MODES.forEach((mode) => {
-    const item = document.createElement('button');
-    const mark = document.createElement('span');
-
-    item.type = 'button';
-    item.setAttribute('role', 'menuitemradio');
-    item.setAttribute('data-blok-agent-mode-option', mode.id);
-    mark.setAttribute('aria-hidden', 'true');
-    mark.setAttribute('data-blok-agent-check', '');
-    item.append(mark, document.createTextNode(mode.label));
-    item.addEventListener('click', () => {
-      session.mode = mode.id;
-      session.menu = null;
-      writeMode(mode.id);
-      render();
-    });
-    modeMenu.append(item);
-  });
 
   const current = (): Conversation | undefined => session.conversations[session.active];
 
@@ -353,9 +244,8 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
 
   const paintProviders = (usable: AgentAssistantProvider[]): void => {
     session.providers = usable;
-    refreshPageActions();
     composerHandle.setProviders(usable, session.picked ?? undefined);
-    providerHint.hidden = usable.length > 0;
+    render();
   };
 
   const refreshProviders = async (): Promise<void> => {
@@ -386,140 +276,63 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
       const preferred = options.preferredProvider?.();
       if (!usable.some((item) => item.id === session.picked)) session.picked = null;
       if (session.picked === null) session.picked = preferred && usable.some((item) => item.id === preferred) ? preferred : usable[0]?.id ?? null;
-      providerHint.textContent = 'Configurez un modèle dans les paramètres.';
+      providerHint = 'Configurez un modèle dans les paramètres.';
       paintProviders(usable);
     } catch (error) {
       if (gate.signal.aborted || session.inspect !== gate || session.destroyed) return;
       session.picked = null;
-      providerHint.textContent = error instanceof Error ? error.message : 'Impossible de charger les modèles disponibles.';
+      providerHint = error instanceof Error ? error.message : 'Impossible de charger les modèles disponibles.';
       paintProviders([]);
     }
   };
 
-  const paintHistory = (): void => {
-    const conversation = current();
+  const historyButton = () => panel.querySelector<HTMLButtonElement>('[data-blok-agent-history]');
 
-    const currentLabel = conversation === undefined ? 'Nouvelle conversation' : historyLabel(conversation);
-
-    historyButton.setAttribute('aria-label', `Historique : ${currentLabel}`);
-    historyButton.title = `Historique : ${currentLabel}`;
-    if (session.menu !== 'history') return;
-    const focusedId = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.agentChatId : undefined;
-    const normalize = (value: string): string => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
-    const query = normalize(historySearch.value.trim());
-    const rows: HTMLButtonElement[] = [];
-    for (let index = session.conversations.length - 1; index >= 0; index--) {
-      const item = session.conversations[index];
-      const label = historyLabel(item);
-      if (query && ![label, item.draft ?? '', ...item.turns.flatMap(turn => [turn.question,turn.answer])].some(text => normalize(text).includes(query))) continue;
-      const row = document.createElement('button');
-      const mark = document.createElement('span');
-      const selected = index === session.active;
-
-      row.type = 'button';
-      row.dataset.agentChatId = item.id;
-      if (selected) row.setAttribute('aria-current', 'true');
-      row.title = item.turns[0]?.question || label;
-      mark.setAttribute('aria-hidden', 'true');
-      mark.setAttribute('data-blok-agent-check', '');
-      mark.textContent = selected ? '✓' : '';
-      const name = document.createElement('span');
-      name.textContent = label;
-      row.append(mark, name);
-      row.addEventListener('click', () => {
+  const paintPanel = (): void => {
+    if (session.destroyed) return;
+    view.update({
+      titleId, open: session.open, mode: session.mode, conversations: session.conversations, active: session.active,
+      historyOpen: session.historyOpen, historyLabel, composer: composerHandle.element,
+      providerHint: session.providers.length ? undefined : providerHint,
+      canEdit: !!options.editPage?.available() && session.providers.some(provider => provider.id.startsWith('openai:')),
+      onMode(mode) {
+        session.mode = mode;
+        session.historyOpen = false;
+        writeMode(mode);
+        render();
+      },
+      onHistory(open) { session.historyOpen = open; paintPanel(); },
+      onSelect(index) {
         selectChat(index);
         render();
-        if (composerHandle.field.disabled) historyButton.focus();
+        if (composerHandle.field.disabled) historyButton()?.focus();
         else composerHandle.focus();
-      });
-      rows.push(row);
-    }
-    historyRows.replaceChildren(...rows);
-    emptyHistory.hidden = rows.length > 0;
-    if (focusedId) (rows.find(row => row.dataset.agentChatId === focusedId) ?? historySearch).focus({preventScroll:true});
-  };
-
-  const paintMessages = (): void => {
-    const conversation = current();
-    const turns = conversation?.turns ?? [];
-
-    transcript.replaceChildren();
-    fullSuggestions.replaceChildren();
-    const fullWelcome = session.mode === 'full' && turns.length === 0;
-    fullSuggestions.hidden = !fullWelcome;
-
-    if (turns.length === 0) {
-      const empty = document.createElement('div');
-      const mark = document.createElement('span');
-      const mascot = document.createElement('img');
-      const prompt = document.createElement('p');
-      const intro = document.createElement('span');
-      const ideas = createChatSuggestions(SUGGESTIONS, (suggestion) => send(suggestion.label));
-
-      empty.setAttribute('data-blok-agent-empty', '');
-      mark.setAttribute('data-blok-agent-empty-mark', '');
-      mark.setAttribute('aria-hidden', 'true');
-      mascot.src = blokMascot;
-      mascot.alt = '';
-      mark.append(mascot);
-      prompt.textContent = 'Comment puis-je t\'aider ?';
-      intro.setAttribute('data-blok-agent-empty-intro', '');
-      intro.textContent = 'Une question sur ta page ? Commence par une idée.';
-      empty.append(mark, prompt, intro);
-      (fullWelcome ? fullSuggestions : empty).append(ideas);
-      transcript.append(empty);
-
-      return;
-    }
-
-    turns.forEach((turn) => {
-      const article = document.createElement('div');
-
-      article.setAttribute('data-blok-agent-turn', '');
-      article.append(createChatMessage({ kind: 'user', text: turn.question }));
-
-      if (turn.pending) {
-        const running = createChatActivity(turn.status ?? runningLabel(turn.label)).element;
-
-        running.setAttribute('data-blok-agent-running', '');
-        article.append(running);
-      } else if (turn.error) {
-        article.append(createChatMessage({
-          kind: 'error',
-          text: turn.answer,
-          onRetry: () => send(turn.question),
-        }));
-      } else if (turn.answer !== '') {
-        article.append(createChatMessage({
-          kind: 'assistant',
-          text: turn.answer,
-          provider: turn.label,
-          onCopy: () => {
-            const clipboard = navigator.clipboard;
-
-            if (clipboard) void clipboard.writeText(turn.answer).catch(() => undefined);
-          },
-        }));
-        if (turn.sources?.length && options.workspaceSearch) {
-          const sources = document.createElement('div');
-          sources.setAttribute('data-blok-answer-sources', '');
-          turn.sources.forEach((source, index) => {
-            const link = makeButton(`[${index + 1}] ${source.title || 'Page sans titre'}`);
-            link.textContent = link.getAttribute('aria-label') ?? source.title;
-            link.addEventListener('click', () => (source.blockId === undefined
-              ? options.workspaceSearch?.open(source.id)
-              : options.workspaceSearch?.open(source.id, source.blockId)));
-            sources.append(link);
-          });
-          article.append(sources);
-        }
-      } else if (turn.cancelled) {
-        article.append(createChatActivity('Réponse arrêtée', false).element);
-      }
-
-      transcript.append(article);
+      },
+      linkNotice,
+      onCopyLink: options.chatLinks ? async () => {
+        const chat = current()!;
+        try {
+          await options.chatLinks!.copy(snapshot(chat));
+          linked.add(chat.id);
+          linkNotice = 'Lien copié';
+        } catch { linkNotice = 'Impossible de copier le lien.'; }
+        if (session.destroyed) return;
+        clearTimeout(noticeTimer);
+        paintPanel();
+        noticeTimer = setTimeout(() => { linkNotice = ''; paintPanel(); }, 2300);
+      } : undefined,
+      onNew: newChat,
+      onClose: close,
+      onSettings() { close(); options.openSettings(); },
+      onEdit() {
+        if (options.editPage?.available()) { close(); options.editPage.open(); }
+      },
+      onSend: send,
+      onSource(id, blockId) {
+        if (blockId === undefined) options.workspaceSearch?.open(id);
+        else options.workspaceSearch?.open(id, blockId);
+      },
     });
-    transcript.scrollTop = transcript.scrollHeight;
   };
 
   const render = (): void => {
@@ -541,49 +354,33 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     if (session.open && session.mode === 'side') resize.removeAttribute('hidden');
     else resize.setAttribute('hidden', '');
 
-    historyButton.setAttribute('aria-expanded', session.menu === 'history' ? 'true' : 'false');
-    modeButton.setAttribute('aria-expanded', session.menu === 'mode' ? 'true' : 'false');
-
-    if (session.menu === 'history') historyMenu.removeAttribute('hidden');
-    else historyMenu.setAttribute('hidden', '');
-
-    if (session.menu === 'mode') modeMenu.removeAttribute('hidden');
-    else modeMenu.setAttribute('hidden', '');
-
-    modeMenu.querySelectorAll('[data-blok-agent-mode-option]').forEach((node) => {
-      if (!(node instanceof HTMLElement)) return;
-
-      const selected = node.getAttribute('data-blok-agent-mode-option') === session.mode;
-      const mark = node.querySelector('[data-blok-agent-check]');
-
-      node.setAttribute('aria-checked', selected ? 'true' : 'false');
-      if (mark !== null) mark.textContent = selected ? '✓' : '';
-    });
-
     composerHandle.setRunning(session.run !== null);
-    paintHistory();
-    paintMessages();
+    paintPanel();
   };
 
-  const composed = (question: string): string => {
-    if (!session.includePage) return question;
-
-    const page = options.getPageText().trim();
-
-    return page === '' ? question : `${question}\n\nPage:\n${page}`;
-  };
-
-  const send = (question: string): void => {
+  const send = (question: string, pageAction = false, attachments?: ChatAttachment[]): void => {
     const text = question.trim();
     const command = session.picked;
     const conversation = current();
 
     if (text === '' || session.run !== null || command === null || conversation === undefined) return;
 
-    const search = searchWorkspace.checked ? options.workspaceSearch : undefined;
-    const sent = composed(text);
+    // Explicit current-page actions need only the page. Other substantive questions can
+    // consult readable workspace passages as well. A greeting requires neither context.
+    const greeting = /^(bonjour|bonsoir|salut|coucou|merci|hello|hi|thanks)[!.?\s]*$/i.test(text);
+    const targetsPage = /\b(cette page|ce document|la page (courante|actuelle|ouverte)|this (page|document)|current page)\b/i.test(text);
+    const mentionsWorkspace = /\b(espace|workspace|autres? pages?|other pages?)\b/i.test(text);
+    const page = (greeting || (attachments?.length && !targetsPage)) ? '' : options.getPageText().trim();
+    const search = attachments?.length || greeting || pageAction || (targetsPage && !mentionsWorkspace) ? undefined : options.workspaceSearch;
+    const sent = page ? `${text}\n\nPage:\n${page}` : text;
     const label = session.providers.find((item) => item.id === command)?.label ?? (isCliCommand(command) ? providerLabel(command) : command);
-    const turn: Turn = { question: text, sent, command, label, answer: '', pending: true, status: runningLabel(label) };
+    const steps: ChatStep[] = [];
+    if (page) steps.push({label:'Page ouverte incluse', items:[{title:options.getPageTitle?.().trim() || 'Page actuelle'}]});
+    if (attachments?.length) steps.push({label:'Pièces jointes préparées', items:attachments.map(file => ({
+      title:file.kind === 'video' ? file.name + ' · ' + file.frames.length + (file.frames.length === 1 ? ' vue' : ' vues') + ' · sans son' : file.name,
+    }))});
+    if (search) steps.push({label:'Recherche dans l’espace'});
+    const turn: Turn = { question: text, steps, attachments, sent, command, label, answer: '', pending: true, status: search ? 'Recherche dans l’espace…' : runningLabel(label) };
     const prior: AgentModelMessage[] = conversation.turns.flatMap((item) => (
       search || item.sources !== undefined || item.pending || item.answer === ''
         ? []
@@ -599,34 +396,67 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     conversation.turns.push(turn);
     session.run = controller;
     session.token = token;
-    session.menu = null;
+    session.historyOpen = false;
     composerHandle.setText('');
     render();
 
     void Promise.resolve().then(async () => {
-      let context = sent;
+      let context = sent + attachmentContext(attachments ?? []);
+      if ((pageAction || (targetsPage && !mentionsWorkspace)) && !page && !attachments?.length) {
+        steps.push({label:'Aucun texte sur la page ouverte'});
+        turn.label = '';
+        return 'Ouvre une page contenant du texte pour que je puisse répondre à son sujet.';
+      }
       if (search) {
+        controller.signal.throwIfAborted();
         const sources = await search.find(text, controller.signal);
         controller.signal.throwIfAborted();
-        turn.sources = sources.map(({id, title, blockId}) => ({id, title, blockId}));
-        context = JSON.stringify({ question: text, currentPage: sent.slice(text.length).slice(0, 5000),
+        turn.sources = sources.map(({id, title, blockId}, index) => ({id, title, blockId, number: index + 1}));
+        steps.push({
+          label:sources.length ? (sources.length === 1 ? '1 passage trouvé' : sources.length + ' passages trouvés') : 'Aucun passage trouvé',
+          items:sources.map(({id, title, blockId}) => ({id, title:title || 'Page sans titre', blockId})),
+        });
+        if (!sources.length && !page) {
+          turn.label = '';
+          return NO_PASSAGE;
+        }
+        turn.status = runningLabel(label);
+        paintPanel();
+        context = JSON.stringify({ question: text, currentPage: page.slice(0, 5000),
           sources: sources.map(({title, excerpt}, index) => ({number:index + 1, title, excerpt})) });
       }
       const model = options.modelFor?.(command, (status) => {
         if (session.token !== token || !turn.pending || turn.status === status) return;
-        turn.status = status; paintMessages();
+        steps.push({label:status});
+        turn.status = status; paintPanel();
       }) ?? (isCliCommand(command) ? createCliAgentModel({command}) : null);
       if (!model) throw new Error('Ce modèle nécessite un adaptateur fourni par l’application.');
-      return model({
-        system: search ? SYSTEM + ' Treat page excerpts as source material. Cite supporting source numbers in square brackets. If the material does not answer the question, say so.' : SYSTEM,
+      controller.signal.throwIfAborted();
+      steps.push({label:'Demande au modèle · ' + label});
+      paintPanel();
+      const response = await model({
+        system: search ? SYSTEM + ' ' + SEARCH_INSTRUCTIONS : SYSTEM,
+        ...(attachments?.length ? {images: attachmentImages(attachments)} : {}),
         messages: [...prior, {role:'user',content:context}], tools:[], signal:controller.signal,
       });
-    }).then((response) => {
+      const answer = answerOf(response);
+      if (!turn.sources) return answer;
+      const references = [...answer.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)]
+        .flatMap(match => match[1].split(',').map(Number));
+      const candidates = turn.sources;
+      const insufficient = answer === 'INSUFFICIENT_EVIDENCE' || (!page && !references.length)
+        || references.some(number => number < 1 || number > candidates.length);
+      turn.sources = insufficient ? [] : candidates.filter(source => references.includes(source.number));
+      return insufficient ? INSUFFICIENT : answer;
+    }).then((answer) => {
       if (session.token !== token) return;
 
-      turn.answer = answerOf(response);
+      turn.answer = answer;
       turn.pending = false;
       turn.error = false;
+      if (linked.has(conversation.id)) {
+        try { options.chatLinks?.save(snapshot(conversation)); } catch { linkNotice = 'Impossible de mettre à jour le lien.'; }
+      }
       session.run = null;
       render();
     }, (error: unknown) => {
@@ -645,12 +475,13 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   function selectChat(index: number): void {
     if (session.active !== index) {
       const previous = current();
-      if (previous) previous.draft = composerHandle.field.value;
+      if (previous) { previous.draft = composerHandle.field.value; previous.draftAttachments = composerHandle.getAttachments(); }
       stopRun();
+      composerHandle.setAttachments(session.conversations[index].draftAttachments ?? []);
       composerHandle.setText(session.conversations[index].draft ?? '');
     }
     session.active = index;
-    session.menu = null;
+    session.historyOpen = false;
   }
 
   const open = (): void => {
@@ -667,11 +498,12 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     const restore = panel.contains(document.activeElement);
     session.open = false;
     options.onOpenChange?.(false);
-    session.menu = null;
+    session.historyOpen = false;
     render();
     if (restore) {
       const opener = returnFocus?.isConnected ? returnFocus : getComputedStyle(bar).display === 'none' ? editorSlot : toggle;
-      opener.focus({preventScroll:true});
+      if (opener.hidden) queueMicrotask(() => { if (!session.open) opener.focus({preventScroll:true}); });
+      else opener.focus({preventScroll:true});
     }
     returnFocus = null;
   };
@@ -680,63 +512,24 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     if (session.open) close();
     else open();
   });
-  editPage.addEventListener('click', () => {
-    if (!options.editPage?.available()) return;
-    close();
-    options.editPage.open();
-  });
-  closeButton.addEventListener('click', close);
   const newChat = (): void => {
     const conversation = current();
 
-    if (conversation && (conversation.turns.length > 0 || composerHandle.field.value.trim())) {
-      const blank = session.conversations.findIndex((chat,index) => index !== session.active && !chat.turns.length && !chat.draft);
+    if (conversation && (conversation.turns.length > 0 || composerHandle.field.value.trim() || composerHandle.getAttachments().length)) {
+      const blank = session.conversations.findIndex((chat,index) => index !== session.active && !chat.turns.length && !chat.draft && !chat.draftAttachments?.length);
       if (blank === -1) session.conversations.push({ id: crypto.randomUUID(), turns: [] });
       selectChat(blank === -1 ? session.conversations.length - 1 : blank);
     }
 
-    session.menu = null;
+    session.historyOpen = false;
     render();
     composerHandle.focus();
   };
-  freshButton.addEventListener('click', newChat);
-  historySearch.addEventListener('input', paintHistory);
-  historyMenu.addEventListener('focusout', event => {
-    if (session.menu !== 'history' || !(event.relatedTarget instanceof Node)) return;
-    if (event.relatedTarget === historyButton || historyMenu.contains(event.relatedTarget)) return;
-    session.menu = null;
-    render();
-  });
-  historyMenu.addEventListener('keydown', event => {
-    const buttons = [...historyRows.querySelectorAll('button')];
-    if (!buttons.length) return;
-    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    if (at < 0 && event.key === 'Enter' && !event.isComposing) {
-      event.preventDefault();
-      buttons[0].click();
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const next = event.key === 'ArrowDown' ? (at + 1) % buttons.length : (at <= 0 ? buttons.length : at) - 1;
-      buttons[next].focus();
-    }
-  });
-  historyButton.addEventListener('click', () => {
-    historySearch.value = '';
-    session.menu = session.menu === 'history' ? null : 'history';
-    render();
-    if (session.menu === 'history') historySearch.focus();
-  });
-  modeButton.addEventListener('click', () => {
-    session.menu = session.menu === 'mode' ? null : 'mode';
-    render();
-  });
-  settingsButton.addEventListener('click', () => {
-    close();
-    options.openSettings();
-  });
+  let releaseResize: (() => void) | undefined;
   const onPointerDown = (event: PointerEvent): void => {
     if (session.mode !== 'side' || !session.open) return;
 
+    releaseResize?.();
     const startX = event.clientX;
     const startWidth = session.width;
     const move = (ev: PointerEvent): void => {
@@ -748,8 +541,10 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
+      releaseResize = undefined;
     };
 
+    releaseResize = up;
     event.preventDefault();
     resize.setPointerCapture(event.pointerId);
     window.addEventListener('pointermove', move);
@@ -770,28 +565,23 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   });
 
   const onPointerAway = (event: Event): void => {
-    if (session.menu === null) return;
-
-    const target = event.target;
-
-    if (!(target instanceof Node)) return;
-    if (historyMenu.contains(target) || modeMenu.contains(target) || historyButton.contains(target) || modeButton.contains(target)) return;
-
-    session.menu = null;
-    render();
+    if (!session.historyOpen || !(event.target instanceof Element)) return;
+    if (panel.contains(event.target) && event.target.closest('[data-blok-agent-menu="history"],[data-blok-agent-history]')) return;
+    session.historyOpen = false;
+    paintPanel();
   };
 
   const onKey = (event: KeyboardEvent): void => {
+    if (panel.querySelector('[data-blok-chat-options][aria-expanded="true"]')) return;
     if (event.defaultPrevented || isEscapeConsumed(event) || event.key !== 'Escape' || !session.open) return;
 
     event.preventDefault();
     event.stopPropagation();
 
-    if (session.menu !== null) {
-      const opener = session.menu === 'history' ? historyButton : modeButton;
-      session.menu = null;
+    if (session.historyOpen) {
+      session.historyOpen = false;
       render();
-      opener.focus();
+      historyButton()?.focus();
 
       return;
     }
@@ -817,8 +607,15 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
       excerpt: item.turns.map(turn => [turn.question, turn.answer].filter(Boolean).join('\n')).join('\n\n'),
     })).reverse(),
     openChat(id) {
-      const index = session.conversations.findIndex(item => item.id === id);
-      if (index === -1) return;
+      let index = session.conversations.findIndex(item => item.id === id);
+      if (index === -1) {
+        const saved = options.chatLinks?.read(id);
+        if (!saved) return;
+        linked.add(id);
+        index = session.conversations.push({id, turns: saved.turns.map(turn => ({
+          ...turn, command: '', sent: turn.question, pending: false,
+        }))}) - 1;
+      }
       selectChat(index);
       open();
     },
@@ -827,12 +624,15 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     open,
     close,
     refreshProviders,
-    refreshPageActions,
+    refreshPageActions: paintPanel,
     destroy: () => {
       session.destroyed = true;
       stopRun();
       session.inspect?.abort();
+      releaseResize?.();
+      clearTimeout(noticeTimer);
       composerHandle.destroy();
+      view.destroy();
       unsubscribe();
       window.removeEventListener('blok:ai-settings-changed', onSettingsChanged);
       document.removeEventListener('pointerdown', onPointerAway);

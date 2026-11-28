@@ -37,7 +37,7 @@ pub struct AiStatus {
 #[derive(Deserialize)]
 pub struct AiMessage {
     role: String,
-    content: String,
+    content: Value,
 }
 #[derive(Serialize)]
 pub struct AiModel {
@@ -49,6 +49,10 @@ pub struct AiModels {
 }
 #[derive(Serialize)]
 pub struct AiResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_tokens: Option<u64>,
+    usage: Option<Value>,
+    service_tier: Option<String>,
     text: String,
     model: String,
 }
@@ -248,25 +252,33 @@ fn request_body(model: &str, system: &str, messages: &[AiMessage]) -> Result<Val
         return Err("Le contexte est trop volumineux pour cette demande OpenAI.".into());
     }
     let mut total = system.len();
-    for item in messages {
+    let mut input = Vec::new();
+    let mut has_user = false;
+    for (index, item) in messages.iter().enumerate() {
         if !matches!(item.role.as_str(), "user" | "assistant") {
             return Err("Le format de la conversation n’est pas valide.".into());
         }
-        total = total.saturating_add(item.content.len());
+        let (text, content) = if let Some(text) = item.content.as_str() {
+            (text, json!(text))
+        } else {
+            let parts = item.content.as_array().filter(|p| (2..=5).contains(&p.len())
+                && item.role == "user" && index + 1 == messages.len()).ok_or("Pièces jointes invalides.")?;
+            let text = parts[0]["text"].as_str().filter(|_| parts[0]["type"] == "input_text").ok_or("Texte invalide.")?;
+            let urls = parts[1..].iter().map(|p| p["image_url"].as_str().filter(|_| p["type"] == "input_image")
+                .map(str::to_owned).ok_or("Image invalide.")).collect::<Result<Vec<_>, _>>()?;
+            super::chat_images::parse(&urls)?;
+            let mut content = vec![json!({"type":"input_text","text":text})];
+            content.extend(urls.iter().map(|url| json!({"type":"input_image","image_url":url})));
+            (text, Value::Array(content))
+        };
+        input.push(json!({"role":item.role,"content":content}));
+        has_user |= item.role == "user" && !text.trim().is_empty();
+        total = total.saturating_add(text.len());
         if total > MAX_INPUT {
             return Err("Le contexte est trop volumineux pour cette demande OpenAI.".into());
         }
     }
-    if !messages
-        .iter()
-        .any(|item| item.role == "user" && !item.content.trim().is_empty())
-    {
-        return Err("Saisissez une demande avant de lancer l’assistant.".into());
-    }
-    let input: Vec<Value> = messages
-        .iter()
-        .map(|item| json!({"role":item.role,"content":item.content}))
-        .collect();
+    if !has_user { return Err("Saisissez une demande avant de lancer l’assistant.".into()); }
     Ok(
         json!({"model":model,"instructions":system,"input":input,"store":false,"stream":false,"max_output_tokens":MAX_OUTPUT_TOKENS}),
     )
@@ -325,6 +337,9 @@ fn parse_response(data: &Value) -> Result<AiResponse, String> {
         return Err("La réponse OpenAI ne contient pas de texte.".into());
     }
     Ok(AiResponse {
+        usage: data.get("usage").cloned(),
+        service_tier: data.get("service_tier").and_then(Value::as_str).map(str::to_owned),
+        total_tokens: data.pointer("/usage/total_tokens").and_then(Value::as_u64),
         text,
         model: model.to_owned(),
     })
@@ -538,7 +553,7 @@ mod tests {
                 "",
                 &[AiMessage {
                     role: "user".into(),
-                    content: "x".repeat(MAX_INPUT + 1)
+                    content: "x".repeat(MAX_INPUT + 1).into()
                 }]
             )
             .is_err()

@@ -22,6 +22,7 @@ export default defineConfig({
     },
   ],
   resolve: {
+    dedupe: ['react', 'react-dom'],
     alias: {
       '@calendarcn-local': fileURLToPath(new URL('./src/calendarcn', import.meta.url)),
       '@blok/page-table': fileURLToPath(new URL('../src/tools/database/page-table.ts', import.meta.url)), '@blok/agent-assistant': fileURLToPath(new URL('../src/shell/agent-assistant.ts', import.meta.url)), '@blok/popover': fileURLToPath(new URL('../src/components/utils/popover/popover-desktop.ts', import.meta.url)), '@blok/modal-dialog': fileURLToPath(new URL('../src/components/utils/modal-dialog.ts', import.meta.url)),

@@ -1,3 +1,4 @@
+import { recordDeviceUsage } from './ai-usage-store';
 import {shellText} from './shell-i18n';
 import { createAiClient, nativeBridge, selectionKey } from './ai-client';
 import type { WorkspaceRef } from './workspace-registry';
@@ -49,18 +50,21 @@ export async function inspectNativeProvider(command: CliCommand, signal: AbortSi
   }
 }
 
-type AgentPhase = 'checking' | 'starting' | 'thinking' | 'responding';
+type AgentPhase = 'checking' | 'starting' | 'thinking' | 'responding' | 'web_search' | 'command' | 'tool';
 
 const phaseLabel = (provider: Provider, phase: AgentPhase): string => {
   const name = provider === 'codex' ? 'Codex' : 'Claude Code';
 
   if (phase === 'checking') return `Connexion à ${name}…`;
   if (phase === 'starting') return 'Préparation de la requête…';
-  if (phase === 'thinking') return `${name} analyse la demande…`;
+  if (phase === 'thinking') return 'Réflexion en cours…';
+  if (phase === 'web_search') return 'Recherche sur le Web…';
+  if (phase === 'command') return 'Exécution d’une commande…';
+  if (phase === 'tool') return 'Appel d’un outil…';
   return `${name} rédige sa réponse…`;
 };
 
-export async function askAssistant(provider: Provider, question: string, pageText: string, onProgress?: (status: string) => void, signal?: AbortSignal): Promise<string> {
+export async function askAssistant(provider: Provider, question: string, pageText: string, onProgress?: (status: string) => void, signal?: AbortSignal, workspace?: WorkspaceRef, images?: string[]): Promise<string> {
   const native = bridge();
   if (!native) throw new Error('L’assistant IA est disponible dans l’app Blok pour macOS.');
   if (signal?.aborted) throw signal.reason;
@@ -71,7 +75,9 @@ export async function askAssistant(provider: Provider, question: string, pageTex
   progress.onmessage = (event) => onProgress?.(phaseLabel(provider, event.phase));
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    return await native.invoke('agent_ask', { provider, question, pageText, runId, onProgress: progress }) as string;
+    const result = await native.invoke('agent_ask', { provider, question, pageText, ...(images?.length ? {images} : {}), runId, onProgress: progress }) as string | {text:string;usage?:unknown};
+    if (workspace && !signal?.aborted) await recordDeviceUsage(workspace,'chat',provider,typeof result==='string' ? undefined : result.usage);
+    return typeof result==='string' ? result : result.text;
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
@@ -80,11 +86,11 @@ export async function askAssistant(provider: Provider, question: string, pageTex
 const plain = (content: string | AgentModelContentBlock[]): string =>
   typeof content === 'string' ? content : content.map((block) => block.type === 'text' && typeof block.text === 'string' ? block.text : '').join('\n');
 
-export const nativeAgentModel = (provider: Provider, onProgress?: (status: string) => void): AgentModel => async (request) => {
+export const nativeAgentModel = (provider: Provider, onProgress?: (status: string) => void, workspace?:WorkspaceRef): AgentModel => async (request) => {
   if (request.signal.aborted) throw request.signal.reason;
   const history = request.messages.slice(-9).map((message) => `${message.role}: ${plain(message.content)}`).join('\n\n');
   const prompt = `${request.system}\n\n${history}`.slice(-100_000);
-  const answer = await askAssistant(provider, prompt, '', onProgress, request.signal);
+  const answer = await askAssistant(provider, prompt, '', onProgress, request.signal, workspace, request.images);
   if (request.signal.aborted) throw request.signal.reason;
   return { content: [{ type: 'text', text: answer }], stop_reason: 'end_turn' };
 };
@@ -106,7 +112,7 @@ export function createAssistantButton(onClick: () => void): HTMLButtonElement {
 export function bindAssistantButton(button: HTMLButtonElement, panel: HTMLElement): MutationObserver {
   const sync = (): void => {
     const expanded = !panel.hidden;
-    button.toggleAttribute('hidden', expanded && panel.getAttribute('data-blok-agent-mode') !== 'floating');
+    button.toggleAttribute('hidden', expanded);
     button.setAttribute('aria-expanded', String(expanded));
     button.setAttribute('aria-label', expanded ? shellText("Fermer l’assistant IA") : shellText("Ouvrir l’assistant IA"));
     button.setAttribute('title', expanded ? shellText("Fermer l’assistant IA") : shellText("Assistant IA"));
@@ -125,6 +131,7 @@ export function createWorkspaceAssistant(ref: WorkspaceRef) {
   let cachedModels: string[] = [];
   let catalogFor = '';
   return {
+    acceptAttachments: true,
     async listProviders(signal: AbortSignal): Promise<{id:string;label:string}[]> {
       const result: {id:string;label:string}[] = [];
       let configFailure: unknown;
@@ -154,12 +161,20 @@ export function createWorkspaceAssistant(ref: WorkspaceRef) {
     preferredProvider: (): string | null => localStorage.getItem(key) ?? fallback ?? selectedProvider(),
     onProviderSelected: (id: string): void => { localStorage.setItem(key,id); },
     modelFor: (id: string, onProgress: (status:string)=>void): AgentModel => {
-      if(id === 'codex' || id === 'claude') return nativeAgentModel(id,onProgress);
+      if(id === 'codex' || id === 'claude') return nativeAgentModel(id,onProgress,ref);
       return async(request)=>{
         if(!id.startsWith('openai:')) throw new Error('Fournisseur indisponible.');
         const model=id.slice('openai:'.length);
-        onProgress(`OpenAI · ${model} prépare la réponse…`);
-        const result=await client.respond({model, system:request.system, messages:request.messages.slice(-20).map(message=>({role:message.role as 'user'|'assistant',content:plain(message.content)}))},request.signal);
+        onProgress(`En attente de la réponse de ${model}…`);
+        const recent = request.messages.slice(-20);
+        const messages = recent.map((message, index) => {
+          const text = plain(message.content);
+          const content = index === recent.length - 1 && message.role === 'user' && request.images?.length
+            ? [{type:'input_text' as const, text}, ...request.images.map(image_url => ({type:'input_image' as const, image_url}))]
+            : text;
+          return {role:message.role, content};
+        });
+        const result = await client.respond({model, system:request.system, messages}, request.signal);
         request.signal.throwIfAborted();
         return {content:[{type:'text',text:result.text}],stop_reason:'end_turn'};
       };

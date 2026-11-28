@@ -14,3 +14,45 @@
 
 [data-ai-settings] .blok-button:hover { background:var(--desktop-hover); }
 [data-ai-settings] .blok-button:focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:2px; }
+
+.ai-settings-tabs { margin:12px 0 22px; }
+.ai-usage-segment { display:inline-flex; width:max-content; padding:3px; gap:2px; border-radius:9px; background:var(--desktop-hover); }
+[data-ai-settings] .ai-usage-segment button, .ai-usage button, .ai-usage select { border:0; background:transparent; color:var(--desktop-muted); font:inherit; font-size:13px; cursor:pointer; }
+[data-ai-settings] .ai-usage-segment button { padding:5px 11px; border-radius:6px; }
+[data-ai-settings] .ai-usage-segment button[aria-pressed=true] { color:var(--desktop-ink); background:var(--desktop-canvas); box-shadow:0 1px 3px #0002; }
+[data-ai-settings] .ai-usage { max-width:760px; padding-top:8px; color:var(--desktop-ink); font-variant-numeric:tabular-nums; }
+.ai-usage-intro,.ai-usage-note { font-size:13px; color:var(--desktop-muted); margin:5px 0 20px; }
+.ai-usage-controls,.ai-usage-period { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.ai-usage-controls { padding-top:17px; border-top:1px solid var(--desktop-border); }
+.ai-usage-controls .ai-usage-segment { margin-inline-end:auto; }
+.ai-usage select { padding:6px 8px; border:1px solid var(--desktop-border); border-radius:7px; background:var(--desktop-canvas); color:var(--desktop-ink); }
+.ai-usage-period { margin:20px 0 10px; }
+.ai-usage-period strong { margin-inline-end:auto; font-size:13px; font-weight:500; }
+.ai-usage-period button { display:grid; place-items:center; width:30px; height:30px; border-radius:6px; }
+.ai-usage-period button:hover { background:var(--desktop-hover); }
+.ai-usage-period button:disabled { opacity:.35; cursor:default; }
+.ai-usage-total { display:flex; align-items:baseline; gap:8px; }
+.ai-usage-total strong { font-size:28px; font-weight:600; letter-spacing:-.03em; }
+.ai-usage-total span,.ai-usage-legend small { font-size:12px; color:var(--desktop-muted); }
+.ai-usage-chart { position:relative; height:180px; min-width:0; overflow:clip; }
+.ai-usage-empty { margin:16px 0; padding:22px 0; border-block:1px solid var(--desktop-border); color:var(--desktop-muted); font-size:13px; }
+.ai-usage-legend { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:16px; padding:0; margin:20px 0; list-style:none; }
+.ai-usage-legend li { display:grid; grid-template-columns:auto 1fr; align-items:baseline; gap:3px 6px; border-inline-start:3px solid; padding-inline-start:9px; }
+.ai-usage-legend li span { grid-column:1/-1; font-size:12px; color:var(--desktop-muted); }
+.ai-usage-note { font-size:12px; }
+
+.ai-usage-tooltip { padding:9px 12px; border:1px solid var(--desktop-border); border-radius:8px; background:var(--desktop-strip); color:var(--desktop-ink); font-size:12px; }
+.ai-usage-tooltip div { display:flex; justify-content:space-between; gap:16px; margin-top:4px; }
+.ai-usage-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); margin:12px 0 18px; border:1px solid var(--desktop-border); border-radius:10px; overflow:hidden; }
+.ai-usage-summary .ai-usage-total { display:flex; flex-direction:column; gap:6px; padding:12px 14px; background:var(--desktop-strip); }
+.ai-usage-summary .ai-usage-total strong { font-size:clamp(16px,2vw,22px); overflow-wrap:anywhere; }
+.ai-usage-controls [data-desktop-choice] { color:var(--desktop-ink); }
+.ai-usage-table { overflow-x:auto; margin:10px 0; }
+.ai-usage-table table { border-collapse:collapse; width:100%; min-width:510px; font-size:12px; }
+.ai-usage-table td,.ai-usage-table th { padding:9px 6px; text-align:end; border-bottom:1px solid var(--desktop-border); font-weight:400; }
+.ai-usage-table th:first-child { text-align:start; }
+.ai-usage-table thead,.ai-usage-table small { color:var(--desktop-muted); }
+.ai-usage-table small { display:block; padding-top:3px; }
+.ai-usage-index { margin-top:20px; border-top:1px solid var(--desktop-border); padding-top:14px; font-size:13px; }
+.ai-usage-index div { display:flex; align-items:center; gap:12px; }
+.ai-usage-index p,.ai-usage-index span { color:var(--desktop-muted); font-size:12px; }

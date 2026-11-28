@@ -90,6 +90,7 @@ export function settingsCatalog(workspace: WorkspaceRef, sidebar: SidebarPrefere
       ...(disk || workspace.role !== 'viewer' ? [setting(shellText("Ajouter un émoji"), shellText("Choisir une image pour un nouvel émoji."), '[data-custom-emoji-tools] [data-cloud-settings-primary]')] : []),
     ],
     ai: [
+      setting(shellText("Statistiques"),shellText("Historique d’utilisation"),'[data-ai-statistics]','tokens usage conversations indexation'),
       ...(!disk || native ? [setting(shellText("Ma clé OpenAI"), shellText("Configurer la clé API personnelle de l’assistant."), '[data-ai-scope="personal"]')] : []),
       ...(native ? [setting(shellText("Agents sur ce Mac"), shellText("Vérifier la connexion de Codex et Claude Code."), '[data-desktop-settings-provider-status]')] : []),
     ],

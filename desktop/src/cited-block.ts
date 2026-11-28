@@ -14,6 +14,8 @@ export interface CitedBlockHost {
   mountedEditor(pageId: string): CitedBlockEditor | null;
   /** Compteur de navigation : il change dès que le lecteur part ailleurs. */
   generation(): number;
+  /** Remote blocks may arrive after isReady. */
+  remoteCanvas?: HTMLElement;
 }
 
 export interface CitedBlockNavigator {
@@ -31,21 +33,38 @@ export interface CitedBlockNavigator {
 export function createCitedBlockNavigator(host: CitedBlockHost): CitedBlockNavigator {
   const pending: { citation: { pageId: string; blockId: string } | null } = { citation: null };
 
+  let request = 0;
+  let stopWaiting: (() => void) | undefined;
   const reveal = (editor: CitedBlockEditor, blockId: string): void => {
     const turn = host.generation();
+    const currentRequest = request;
     void editor.isReady.then(() => {
       // Le lecteur est reparti ailleurs pendant le chargement : ne pas le déplacer.
-      if (host.generation() !== turn) return;
-      // L'index de recherche a du retard : le bloc cité peut avoir été supprimé.
-      const block = editor.blocks.getById(blockId);
-      if (!block) return;
-      editor.caret.setToBlock(blockId, 'start');
-      block.holder.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    });
+      const tryScroll = (): boolean => {
+        if (host.generation() !== turn || request !== currentRequest) return true;
+        const block = editor.blocks.getById(blockId);
+        if (!block) return false;
+        editor.caret.setToBlock(blockId, 'start');
+        block.holder.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return true;
+      };
+      if (tryScroll() || !host.remoteCanvas) return;
+      const observer = new MutationObserver(() => { if (tryScroll()) finish(); });
+      const finish = (): void => {
+        observer.disconnect();
+        clearTimeout(timer);
+        if (stopWaiting === finish) stopWaiting = undefined;
+      };
+      const timer = setTimeout(finish,30_000);
+      stopWaiting = finish;
+      observer.observe(host.remoteCanvas,{subtree:true,childList:true});
+    }).catch(() => { /* The workspace handles editor mount errors. */ });
   };
 
   return {
     open(pageId, blockId) {
+      request++;
+      stopWaiting?.();
       const mounted = blockId ? host.mountedEditor(pageId) : null;
       pending.citation = blockId && !mounted ? { pageId, blockId } : null;
       host.navigate(pageId);

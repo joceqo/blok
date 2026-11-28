@@ -32,3 +32,14 @@ describe('workspace OpenAI assistant adapter',()=>{
   ai.respond.mockRejectedValue(new Error('Clé refusée'));await expect(adapter.modelFor('openai:gpt-other',()=>undefined)({system:'',messages:[],tools:[],signal:new AbortController().signal})).rejects.toThrow('Clé refusée');
  });
 });
+
+it('attaches inline images to the final user message for OpenAI', async () => {
+  const signal = new AbortController().signal;
+  const url = 'data:image/png;base64,YWJj';
+  await createWorkspaceAssistant(ref).modelFor('openai:gpt-test', vi.fn())({
+    system:'', messages:[{role:'user',content:'Question'}], images:[url], tools:[], signal,
+  });
+  expect(ai.respond).toHaveBeenCalledWith({model:'gpt-test',system:'',messages:[{
+    role:'user',content:[{type:'input_text',text:'Question'},{type:'input_image',image_url:url}],
+  }]}, signal);
+});

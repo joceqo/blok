@@ -42,6 +42,7 @@ import {
 } from './welcome-seed';
 import { markdownImportAttempt } from './markdown-import-attempt';
 import { COVER_GALLERY, readCoverFile, createAddCoverButton, createPageCover, isPageCover, trackPageHeaderHover, type PageCover } from './cover';
+import { chatLinks, pendingChat } from './chat-link';
 import { mountAgentAssistant, type AgentAssistantHandle } from '@blok/agent-assistant';
 import { createAiClient, selectionKey } from './ai-client';
 import { pageEditorAssistant } from './editor-assistant';
@@ -242,6 +243,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   /** Une source citée par l'assistant ouvre sa page, puis y rejoint le bloc cité. */
   const citations = createCitedBlockNavigator({
     navigate: (pageId) => navigate(pageId),
+    remoteCanvas: ref.kind === 'remote' ? ws.pageCanvas : undefined,
     mountedEditor: (pageId) => ws.currentId === pageId ? ws.editor : null,
     generation: () => ws.generation,
   });
@@ -1054,11 +1056,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     },
   });
   ws.frame.element.append(status);
+  const links = chatLinks(ref);
   ws.assistant = mountAgentAssistant({
+    chatLinks: links,
     onOpenChange: open => ws.frame.setChatActive(open),
     workspaceSearch: ref.kind === 'remote'
       ? { find: repository.searchSources, open: (id: string, blockId?: string) => citations.open(id, blockId) }
       : undefined,
+    getPageTitle: () => ws.index?.pages.find(page => page.id === ws.currentId)?.title || '',
     getPageText: () => ws.pageCanvas.querySelector('[data-desktop-document]')?.textContent?.slice(0, 100_000) ?? '',
     openSettings: () => ws.footer.dispatchEvent(new Event('blok:desktop-open-ai-settings')),
     editPage: {
@@ -1066,6 +1071,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       open: () => { if (activeEditable()) ws.editor?.agent.openAssistant(); },
     },
     ...createWorkspaceAssistant(ref),
+  });
+  const openLinkedChat = (id: string) => {
+    if (links.read(id)) ws.assistant.openChat(id);
+    else showError(new Error('Discussion introuvable dans cet espace sur cet appareil.'));
+  };
+  window.addEventListener('blok:open-linked-chat', event => {
+    if (!ws.assistant.element.isConnected) return;
+    event.preventDefault();
+    openLinkedChat((event as CustomEvent<string>).detail);
   });
   ws.pageCanvas = ws.assistant.editorSlot;
   const libraryHost = document.createElement('div');
@@ -1076,6 +1090,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   libraryHost.append(libraryContent);
   ws.pageCanvas.before(libraryHost);
   ws.frame.canvas.append(ws.assistant.element);
+  const chatUrl = new URL(location.href);
+  const chatId = sessionStorage.getItem(pendingChat) || chatUrl.searchParams.get('chat');
+  if (chatId) {
+    sessionStorage.removeItem(pendingChat);
+    chatUrl.searchParams.delete('chat');
+    history.replaceState(history.state, '', chatUrl);
+    queueMicrotask(() => openLinkedChat(chatId));
+  }
   const calendarHost = document.createElement('section');
   calendarHost.setAttribute('data-desktop-calendar-app', '');
   calendarHost.hidden = true;

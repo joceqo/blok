@@ -487,9 +487,8 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
   scrollbar-width: none;
 }
 [data-desktop-workspace] [data-blok-agent-editor]::-webkit-scrollbar { display: none; }
-[data-desktop-workspace] [data-blok-agent-panel][data-blok-agent-mode="floating"] {
-  height: min(720px, calc(100vh - 144px));
-  max-height: calc(100dvh - 144px);
+[data-blok-agent-body]:has(> [data-blok-agent-mode="full"]:not([hidden])) > :is([data-desktop-library-host], [data-desktop-calendar-app]) {
+  display: none;
 }
 /* Les rangees prennent leur surface de survol au focus clavier, sans trait
    pose par-dessus. Les autres boutons de la modale gardent un anneau : eux

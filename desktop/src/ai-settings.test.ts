@@ -43,6 +43,6 @@ describe('OpenAI credential settings',()=>{
   expect(client.config).toHaveBeenCalledOnce();expect(container.textContent).toBe(before);expect(input.value).toBe('');
  });
  it('shows asynchronous discovery failures without exposing credential values',async()=>{
-  const {container}=mount(base,{config:vi.fn(async()=>{throw new Error('Session expirée');})});await vi.waitFor(()=>expect(container.textContent).toContain('Session expirée'));expect(container.querySelector('input')).toBeNull();expect(container.querySelector('button')?.textContent).toBe('Réessayer');
+  const {container}=mount(base,{config:vi.fn(async()=>{throw new Error('Session expirée');})});await vi.waitFor(()=>expect(container.textContent).toContain('Session expirée'));expect(container.querySelector('input')).toBeNull();expect([...container.querySelectorAll('button')].some(button=>button.textContent==='Réessayer')).toBe(true);
  });
 });

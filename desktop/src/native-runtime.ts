@@ -1,6 +1,6 @@
 import { CloudApiError, CloudClient, type CloudSession } from './cloud/client';
 import { bindDeviceSession, nativeSessionAdapter } from './native-session';
-import { prefersDefaultDisk, type RemoteWorkspace, type WorkspaceRef } from './workspace-registry';
+import { listWorkspaces, prefersDefaultDisk, workspaceKey, type RemoteWorkspace, type WorkspaceRef } from './workspace-registry';
 
 type NativeBridge = { invoke(command: string, args?: Record<string, unknown>): Promise<unknown> };
 export function nativeBridge(): NativeBridge | undefined {
@@ -69,10 +69,18 @@ export async function deviceWorkspaces() {
   const result = await nativeBridge()?.invoke('embedded_device_session') as DeviceSession | undefined;
   const origin = localOrigin(result?.origin);
   if (typeof result?.token !== 'string' || !result.token || !result.user?.id || !Array.isArray(result.workspaces)) throw new Error('Profil local indisponible.');
-  const references: RemoteWorkspace[] = result.workspaces.map(w => ({
-    kind:'remote', embedded:true, device:true, id:w.id, name:w.name, server:origin,
-    importedDefaultDisk: w.id === result.deviceImportedWorkspaceId,
-    workspaceId:w.slug, role:w.role, accountId:result.user.id, userName:result.user.name || 'Profil local',
-  }));
+  // La session ne transporte pas les icônes, et la référence est rebâtie à
+  // chaque démarrage : sans ce rappel, elle écraserait la seule chose que le
+  // registre savait de l'espace — de quoi il est habillé.
+  const dressing = new Map(listWorkspaces().map(ref => [workspaceKey(ref), ref.icon]));
+  const references: RemoteWorkspace[] = result.workspaces.map(w => {
+    const ref: RemoteWorkspace = {
+      kind:'remote', embedded:true, device:true, id:w.id, name:w.name, server:origin,
+      importedDefaultDisk: w.id === result.deviceImportedWorkspaceId,
+      workspaceId:w.slug, role:w.role, accountId:result.user.id, userName:result.user.name || 'Profil local',
+    };
+    const icon = dressing.get(workspaceKey(ref));
+    return icon ? {...ref, icon} : ref;
+  });
   return {result, origin, references};
 }

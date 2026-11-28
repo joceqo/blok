@@ -191,8 +191,6 @@ export const CompositeurEtSuggestions: Story = {
     expect(send).not.toBeDisabled();
     await userEvent.click(send);
     expect(canvas.getByText('Envoyé : Trouver les points clés')).toBeTruthy();
-    await userEvent.click(canvas.getByRole('button', { name: 'Inclure cette page' }));
-    expect(canvas.getByRole('button', { name: 'Inclure cette page' })).toHaveAttribute('aria-pressed', 'false');
   },
 };
 

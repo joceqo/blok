@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { askAssistant, bindAssistantButton, createAssistantButton } from './assistant';
 
 describe('desktop AI trigger', () => {
-  it('stays available beside the floating panel and closes it', async () => {
+  it('returns the launcher when the floating panel is minimized', async () => {
     const panel = document.createElement('div');
     panel.hidden = true;
     panel.setAttribute('data-blok-agent-mode', 'floating');
@@ -13,12 +13,12 @@ describe('desktop AI trigger', () => {
     expect(button.getAttribute('aria-label')).toBe('Ouvrir l’assistant IA');
     button.click();
     await Promise.resolve();
-    expect(button.hidden).toBe(false);
+    expect(button.hidden).toBe(true);
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(button.getAttribute('aria-label')).toBe('Fermer l’assistant IA');
-    button.click();
+    panel.hidden = true;
     await Promise.resolve();
-    expect(panel.hidden).toBe(true);
+    expect(button.hidden).toBe(false);
     expect(button.getAttribute('aria-expanded')).toBe('false');
 
     panel.hidden = false;

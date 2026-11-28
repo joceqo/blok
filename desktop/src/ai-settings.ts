@@ -23,7 +23,31 @@ export function mountAiSettings(container: HTMLElement, ref: WorkspaceRef, clien
   const intro = node('p', shellText("Choisissez le modèle qui répond dans l’assistant. Votre clé personnelle est prioritaire sur celle du workspace.")); intro.setAttribute('data-desktop-settings-intro','');
   const body = node('div');
   const status = node('p'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
-  container.append(heading, intro, body, status);
+  const tabs = node('div'); tabs.className = 'ai-usage-segment ai-settings-tabs';
+  const preferences = node('div');
+  const usage = node('div'); usage.hidden = true;
+  const overview = button(shellText('Configuration'), () => select(false));
+  const statistics = button(shellText('Statistiques'), () => select(true));
+  statistics.setAttribute('data-ai-statistics','');
+  overview.setAttribute('aria-pressed','true'); statistics.setAttribute('aria-pressed','false');
+  tabs.append(overview,statistics);
+  preferences.append(intro,body,status);
+  container.append(heading,tabs,preferences,usage);
+  let disposeUsage: (()=>void) | undefined;
+  let viewGeneration = 0;
+  function select(showUsage:boolean) {
+    const view = ++viewGeneration;
+    preferences.hidden = showUsage;
+    usage.hidden = !showUsage;
+    overview.setAttribute('aria-pressed',String(!showUsage));
+    statistics.setAttribute('aria-pressed',String(showUsage));
+    disposeUsage?.(); disposeUsage=undefined;
+    if (!showUsage) return;
+    usage.textContent=shellText('Chargement…');
+    void import('./ai-usage-panel').then(({mountUsage}) => {
+      if (!dead && view===viewGeneration) disposeUsage=mountUsage(usage,ref,client);
+    }).catch(error=>{if (!dead && view===viewGeneration) usage.textContent=String(error);});
+  }
 
   const notify = (error: unknown): void => { if (!dead) status.textContent = error instanceof Error ? error.message : String(error); };
   const mutate = async (action: () => Promise<unknown>, form: HTMLElement): Promise<void> => {
@@ -74,6 +98,14 @@ export function mountAiSettings(container: HTMLElement, ref: WorkspaceRef, clien
         }
       }; void refresh();
     }
+    if (scope === 'workspace' && credential.configured && config.embeddingsEnabled !== undefined && client.setEmbeddings) {
+      const enabled = config.embeddingsEnabled;
+      area.append(node('h3',shellText("Recherche par le sens")),
+        node('p',shellText("Une fois activée, les titres et le texte des pages de cet espace, y compris les pages privées, sont envoyés à OpenAI pour l’indexation. Les recherches respectent les droits de lecture. La clé partagée est facturée.")),
+        button(enabled ? shellText("Désactiver l’indexation") : shellText("Activer l’indexation"), () => {
+          void mutate(() => client.setEmbeddings!(!enabled),area);
+        }));
+    }
     return area;
   };
   const render = async (): Promise<void> => {
@@ -102,8 +134,8 @@ export function mountAiSettings(container: HTMLElement, ref: WorkspaceRef, clien
     for(const provider of ['codex','claude'] as const) {
       const state=node('p',shellText("{v0} · Vérification…", {v0: provider === 'codex' ? 'Codex' : 'Claude Code'}));state.setAttribute('data-desktop-settings-provider-status','');local.append(state);
       void providerStatus(provider).then(result=>{if(!dead)state.textContent=shellText("{v0} · {v1}", {v0: provider === 'codex' ? 'Codex' : 'Claude Code', v1: result.connected ? 'Connecté' : result.installed ? 'Non connecté' : 'Non installé'});}).catch(()=>{if(!dead)state.textContent=shellText("État indisponible");});
-    } container.append(local);
+    } preferences.append(local);
   }
-  const disclosure=node('p',shellText("Votre demande et le texte de la page, si vous l’activez, sont envoyés au fournisseur sélectionné. Les appels OpenAI utilisent la facturation de la clé indiquée.")); disclosure.setAttribute('data-desktop-settings-explanation',''); container.append(disclosure);
-  return {destroy(){dead=true;++generation;gate.abort();choices.splice(0).forEach(choice=>choice.destroy());container.querySelectorAll<HTMLInputElement>('input[type=password]').forEach(input=>{input.value='';});}};
+  const disclosure=node('p',shellText("Votre demande et le texte de la page, si vous l’activez, sont envoyés au fournisseur sélectionné. Les appels OpenAI utilisent la facturation de la clé indiquée.")); disclosure.setAttribute('data-desktop-settings-explanation',''); preferences.append(disclosure);
+  return {destroy(){dead=true;disposeUsage?.();++generation;gate.abort();choices.splice(0).forEach(choice=>choice.destroy());container.querySelectorAll<HTMLInputElement>('input[type=password]').forEach(input=>{input.value='';});}};
 }

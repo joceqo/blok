@@ -87,4 +87,24 @@ describe('embedded desktop server', () => {
     vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response('{}',{status:401})));
     expect((await openEmbeddedWorkspace(remote,false)).workspace).toMatchObject({accountId:'local-owner',device:true,id:'safe'});
   });
+  /**
+   * La session du serveur intégré ne transporte pas les icônes : la référence
+   * est rebâtie à chaque démarrage, et l'écrasait. Seul le registre sait de
+   * quoi l'espace de cet appareil est habillé.
+   */
+  it('carries the remembered icon onto the references it rebuilds at every start', async () => {
+    const origin = 'http://127.0.0.1:51232';
+    const own = {id:'own', slug:'maison', name:'Mon espace', role:'admin'};
+    const other = {id:'autre', slug:'archives', name:'Archives', role:'admin'};
+    rememberWorkspace({kind:'remote', embedded:true, device:true, id:own.id, name:own.name, server:origin,
+      accountId:'device', workspaceId:own.slug, icon:'🌱'});
+    rememberWorkspace({kind:'remote', embedded:true, device:true, id:other.id, name:other.name, server:origin,
+      accountId:'device', workspaceId:other.slug, icon:'icon:leaf:green'});
+    const invoke = vi.fn().mockResolvedValue({origin, token:'device-session', user:{id:'device'},
+      workspaces:[own, other], deviceWorkspaceId:own.id});
+    Reflect.set(window, '__TAURI_INTERNALS__', {invoke});
+    const opened = await openEmbeddedWorkspace(initialWorkspace, false);
+    expect(opened.workspace.icon).toBe('🌱');
+    expect(opened.otherWorkspaces?.map(ref => ref.icon)).toEqual(['icon:leaf:green']);
+  });
 });

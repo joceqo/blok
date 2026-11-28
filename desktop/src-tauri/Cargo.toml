@@ -21,7 +21,7 @@ sha2 = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 
-[dev-dependencies]
+base64 = "0.22"
 tempfile = "3"
 
 [profile.release]
