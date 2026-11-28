@@ -117,6 +117,7 @@
   --color-calendar-avatar-foreground: var(--calendar-avatar-foreground);
   --color-calendar-highlight: var(--calendar-highlight);
   --color-calendar-weekend: var(--calendar-weekend);
+  --color-calendar-day-line: var(--calendar-day-line);
   --color-calendar-current-week: var(--calendar-current-week);
   --color-calendar-day-hover: var(--calendar-day-hover);
   --color-calendar-day-hover-current-week: var(
@@ -244,6 +245,10 @@
   --calendar-avatar-foreground: #ffffff;
   --calendar-highlight: #602c2b;
   --calendar-weekend: #fcfcfc;
+  /* The day separators carry the grid, as they do on macOS: the day a thing
+     is on is what the eye looks for first, the hour it is at second. The
+     hour lines keep `--border` and read under them. */
+  --calendar-day-line: #e0e0e0;
   --calendar-current-week: #edece9;
   --calendar-day-hover: #eeece8;
   --calendar-day-hover-current-week: #e2e1dc;
@@ -355,6 +360,7 @@ html.dark,
   --calendar-avatar-foreground: #ffffff;
   --calendar-highlight: #602c2b;
   --calendar-weekend: #181818;
+  --calendar-day-line: #2c2c2c;
   --calendar-current-week: #2e2e2e;
   --calendar-day-hover: #2e2e2e;
   --calendar-day-hover-current-week: #3d3d3d;
