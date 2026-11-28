@@ -495,11 +495,32 @@ export function TimeGrid({
   const handleNavigate = React.useCallback(
     (daysDelta: number) => {
       scrollNavigatedRef.current = true;
-      const next = addShownDays(navigatedFrom.current, daysDelta, showWeekends);
+      // A view that moves by whole weeks re-anchors on the first day of one,
+      // so counting from a mid-week date lands somewhere else entirely: a
+      // Sunday plus seven days is the next Sunday, which re-anchors back six
+      // days behind where the gesture was.
+      const from =
+        navigationStride > 1
+          ? getPeriodStart(
+              navigatedFrom.current,
+              view,
+              weekStartsOn,
+              numberOfDays,
+              showWeekends,
+            )
+          : navigatedFrom.current;
+      const next = addShownDays(from, daysDelta, showWeekends);
       navigatedFrom.current = next;
       goToDate(next);
     },
-    [showWeekends, goToDate],
+    [
+      showWeekends,
+      goToDate,
+      navigationStride,
+      view,
+      weekStartsOn,
+      numberOfDays,
+    ],
   );
 
   const handleDragNavigate = React.useCallback(
