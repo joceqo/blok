@@ -137,6 +137,8 @@ export type AgentModelStreamEvent =
 
 /** What the assistant sends to the host's model function. */
 export interface AgentModelRequest {
+  /** Inline raster images attached to the final user message. */
+  images?: string[];
   system: string;
   messages: AgentModelMessage[];
   tools: AgentModelTool[];
