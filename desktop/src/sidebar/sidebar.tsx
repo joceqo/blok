@@ -9,6 +9,7 @@ export { SidebarPreferencesMenu, SidebarShortcuts };
 import { useId, useState, useSyncExternalStore, type ComponentProps, type Ref } from 'react';
 import type { SidebarPreferences } from '../../../src/shell/sidebar-preferences';
 import type { SidebarMode } from '../sidebar-modes';
+import { SidebarChats } from './sidebar-chats';
 import { SidebarTree } from './sidebar-tree';
 import { SidebarResize } from './sidebar-resize';
 import type { SidebarOptions } from './sidebar-frame';
@@ -137,13 +138,23 @@ export const Sidebar = ({
           mode={mode}
           recents={tree.recents}
         />
-        <SidebarTree
-          {...tree}
-          activeId={mode === 'calendar' ? '' : tree.activeId}
-          options={options}
-          query={query}
-          visibility={visibility}
-        />
+        {mode === 'chat' && options.chats ? (
+          // The chat tab is a view of the workspace, not a section of the
+          // tree: it stands in the tree's place rather than beside it.
+          <SidebarChats
+            chats={options.chats}
+            onOpen={id => options.onOpenChat?.(id)}
+            onNew={() => options.onNewChat?.()}
+          />
+        ) : (
+          <SidebarTree
+            {...tree}
+            activeId={mode === 'calendar' ? '' : tree.activeId}
+            options={options}
+            query={query}
+            visibility={visibility}
+          />
+        )}
         {options.preferenceKey && (
           <SidebarPreferencesMenu
             prefs={prefs}

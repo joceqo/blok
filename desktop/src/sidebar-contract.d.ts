@@ -43,6 +43,9 @@ export function createPageFrame(options: {
   onHome?(): void;
   onChat?(): void;
   onNewChat?(): void;
+  /** The conversations held with the assistant, for the sidebar's chat tab */
+  chats?(): readonly { id: string; title: string; excerpt: string }[];
+  onOpenChat?(id: string): void;
   onLibrary?(recentIds: string[]): void;
   onCalendar?(): void;
   calendarHref?: string;

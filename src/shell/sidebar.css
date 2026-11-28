@@ -751,3 +751,23 @@ button[data-blok-sidebar-search]:focus-visible { outline: 2px solid var(--blok-f
   background: #f7f7f5; --blok-sidebar-label: #5f5e5b; --blok-sidebar-heading: #91918e; --blok-sidebar-selected: #37352f;
   --blok-item-hover-bg: #ebebea; --blok-icon-active-bg: #e8e8e6;
 }
+
+/* The chat tab: the conversations held with the assistant, in the tree's place. */
+[data-blok-sidebar-chats] { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 0 8px; overflow-y: auto; }
+[data-blok-sidebar-chats] button {
+  width: 100%; min-height: 28px; padding: 4px 6px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--blok-sidebar-label);
+  font: inherit; font-size: 14px; text-align: left; cursor: pointer;
+}
+[data-blok-sidebar-chats] button:hover { background: var(--blok-item-hover-bg); }
+[data-blok-sidebar-new-chat] {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px; color: var(--blok-sidebar-heading);
+}
+[data-blok-sidebar-new-chat] svg { flex: none; width: 16px; height: 16px; }
+[data-blok-sidebar-chats-list] { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; list-style: none; }
+/* One line per conversation, cut rather than wrapped */
+[data-blok-sidebar-chat] { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+[data-blok-sidebar-chats-empty] {
+  margin: 8px 6px; color: var(--blok-sidebar-heading); font-size: 13px; line-height: 1.45;
+}
