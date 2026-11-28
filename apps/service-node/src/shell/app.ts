@@ -32,6 +32,7 @@ import { createWorkspaceMembers } from './workspace-members.ts';
 import { createPageSharing } from './page-sharing.ts';
 import { createAccessRecheck, recheckLiveSessions } from './recheck-access.ts';
 import { type ProjectionHead, readProjectionHeaders, saveProjection } from './projection.ts';
+import type { createEmbeddings } from './embeddings.ts';
 import { createWorkspaceSearch } from './workspace-search.ts';
 import { createShellTeamspaces } from './teamspaces.ts';
 import { loadWorkspaceIndex } from './workspace-index.ts';
@@ -40,7 +41,7 @@ import { observeMiddleware, requestIdOf } from '../middleware/observe.ts';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 
-export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret), inviteMail = createInviteMail(pool)) {
+export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret), inviteMail = createInviteMail(pool), embed?: ReturnType<typeof createEmbeddings>) {
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
   const nodeRoomPage = process.env.BLOK_NODE_ROOM_PAGE;
@@ -98,7 +99,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/api/workspaces/:slug/calendar', workspaceCalendar(pool));
   app.route('/api/workspaces/:slug/email-preferences', emailPreferences(pool));
   app.route('/api/workspaces/:slug/notifications', workspaceNotifications(pool));
-  app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
+  app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool,embed));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));
 
   app.get('/healthz', async (c) => {
@@ -112,7 +113,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     return c.json(c.req.path === '/api/session' ? session : { workspaces: session.workspaces });
   });
   app.route('/mcp',createHostedMcp(pool));
-  app.route('/api/workspaces/:slug/ai',createHostedAi(pool));
+  app.route('/api/workspaces/:slug/ai',createHostedAi(pool,fetch,undefined,Boolean(embed)));
   app.route('/',createShellAssets(pool,secret));
   const device = deviceCredential(process.env.BLOK_DEVICE_SESSION_SECRET);
   if (device) app.post('/api/setup/claim', c => c.json({error:'Cet appareil dispose déjà de son compte local.'}, 409));

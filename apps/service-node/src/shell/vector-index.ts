@@ -45,5 +45,32 @@ export async function ensureVectorIndex(pool: Pick<PgPool, 'query'>): Promise<bo
   await pool.query(BY_PAGE);
   await pool.query(BY_WORKSPACE);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS page_embedding_jobs (
+      page_id text PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+      due_at timestamptz DEFAULT now(), lease uuid, attempts integer NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS page_embedding_due ON page_embedding_jobs(due_at) WHERE due_at IS NOT NULL;
+    CREATE OR REPLACE FUNCTION queue_page_embedding() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.deleted OR NEW.trashed THEN
+        DELETE FROM page_chunks WHERE page_id=NEW.id;
+        DELETE FROM page_embedding_jobs WHERE page_id=NEW.id;
+      ELSE
+        INSERT INTO page_embedding_jobs(page_id) VALUES(NEW.id) ON CONFLICT(page_id)
+          DO UPDATE SET due_at=now(), lease=NULL, attempts=0;
+      END IF;
+      RETURN NULL;
+    END $$;
+    CREATE OR REPLACE TRIGGER queue_embedding_insert AFTER INSERT ON pages
+      FOR EACH ROW EXECUTE FUNCTION queue_page_embedding();
+    CREATE OR REPLACE TRIGGER queue_embedding_update AFTER UPDATE OF content,metadata,version,trashed,deleted ON pages
+      FOR EACH ROW WHEN (OLD.version IS DISTINCT FROM NEW.version OR OLD.content IS DISTINCT FROM NEW.content
+        OR OLD.metadata->>'title' IS DISTINCT FROM NEW.metadata->>'title'
+        OR OLD.trashed IS DISTINCT FROM NEW.trashed OR OLD.deleted IS DISTINCT FROM NEW.deleted)
+      EXECUTE FUNCTION queue_page_embedding();
+    INSERT INTO page_embedding_jobs(page_id) SELECT id FROM pages WHERE NOT deleted AND NOT trashed
+      ON CONFLICT DO NOTHING
+  `);
   return true;
 }

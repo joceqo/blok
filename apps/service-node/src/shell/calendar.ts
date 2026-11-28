@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
@@ -106,20 +107,19 @@ export function workspaceCalendar(pool: PgPool) {
     const body = await c.req.json().catch(() => undefined) as {response?: unknown} | undefined;
     const response = validCalendarResponse(body?.response);
     if (!response) throw new HTTPException(400, {message: 'Invalid response'});
-    let answered: {workspace: string; notices: Notice[]} | null = null;
-    const ok = await inTransaction(pool, async db => {
+    const answered = await inTransaction(pool, async db => {
       const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, true);
       const notice = await recordCalendarResponse(db, scope.workspace_id, c.req.param('id')!, scope.user_id, response);
-      if (notice) answered = {workspace: scope.workspace_id, notices: [notice]};
+
       // Only a participant has a row to update; anyone else gets a 404.
       const {rowCount} = await db.query(
         'SELECT 1 FROM calendar_participants WHERE workspace_id=$1 AND event_id=$2 AND user_id=$3',
         [scope.workspace_id, c.req.param('id')!, scope.user_id]);
-      return rowCount > 0;
+      if (!rowCount) throw new HTTPException(404, {message: 'Not invited to this event'});
+      return {workspace:scope.workspace_id,notices:notice ? [notice] : []};
     });
-    if (!ok) throw new HTTPException(404, {message: 'Not invited to this event'});
     // Après le commit seulement : un e-mail ne doit pas annoncer une écriture annulée.
-    if (answered?.notices.length) await deliverNotificationMails(pool, answered.workspace, answered.notices);
+    if (answered.notices.length) await deliverNotificationMails(pool, answered.workspace, answered.notices);
     return c.json({ok: true, response});
   });
   router.get('/invitees', async c => {
@@ -161,8 +161,7 @@ export function workspaceCalendar(pool: PgPool) {
     const write = c.req.method === 'PUT';
     const id = c.req.param('id')!;
     const raw = write ? await c.req.json().catch(() => null) : null;
-    let invited: {workspace: string; notices: Notice[]} | null = null;
-    const result = await inTransaction(pool, async db => {
+    const {result,invited} = await inTransaction(pool, async db => {
       const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, true);
       if (scope.role === 'viewer') throw new WorkspaceError(403, 'Ce calendrier est en lecture seule.');
       if (!uuid.test(id)) throw new WorkspaceError(400, 'Identifiant du calendrier invalide.');
@@ -183,7 +182,7 @@ export function workspaceCalendar(pool: PgPool) {
       if (current && current.revision !== revision) throw conflict();
       if (!input) {
         await db.query('DELETE FROM workspace_calendar_events WHERE workspace_id=$1 AND id=$2', key);
-        return { ok: true };
+        return { result:{ok:true}, invited:undefined };
       }
       const { rows: [saved] } = await db.query<Row>(
         `INSERT INTO workspace_calendar_events(workspace_id,id,title,starts_at,ends_at,all_day,page_id,organizer_id)
@@ -192,6 +191,7 @@ export function workspaceCalendar(pool: PgPool) {
            ends_at=excluded.ends_at, all_day=excluded.all_day, page_id=excluded.page_id,
            organizer_id=coalesce(workspace_calendar_events.organizer_id,excluded.organizer_id), revision=workspace_calendar_events.revision+1
          RETURNING ${columns}`, [...key, input.title, input.start, input.end, input.allDay, input.pageId,scope.user_id]);
+      let invited: {workspace:string;notices:Notice[]} | undefined;
       if (input.participantIds !== undefined) {
         const members = await db.query(
           'SELECT user_id FROM memberships WHERE workspace_id=$1 AND user_id=ANY($2::text[])',
@@ -209,7 +209,7 @@ export function workspaceCalendar(pool: PgPool) {
       }
       const participants = await db.query<{user_id:string}>(
         'SELECT user_id FROM calendar_participants WHERE workspace_id=$1 AND event_id=$2 ORDER BY user_id', key);
-      return { event: eventData({...saved!, participant_ids:participants.rows.map(p => p.user_id)}) };
+      return { result:{event:eventData({...saved!, participant_ids:participants.rows.map(p => p.user_id)})}, invited };
     });
     // Après le commit seulement : un e-mail ne doit pas annoncer une écriture annulée.
     if (invited?.notices.length) await deliverNotificationMails(pool, invited.workspace, invited.notices);

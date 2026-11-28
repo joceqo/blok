@@ -6,6 +6,9 @@ import { serve } from '@hono/node-server';
 import { createPool } from '../db/pool.ts';
 import { createShellApp } from './app.ts';
 
+import { createEmbeddings, startEmbeddingWorker } from './embeddings.ts';
+import { ensureVectorIndex } from './vector-index.ts';
+
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL required');
 const port = Number(process.env.PORT ?? 8081);
@@ -20,13 +23,15 @@ if (deviceCredential(process.env.BLOK_DEVICE_SESSION_SECRET)) {
   if (process.env.BLOK_LISTEN_HOST !== '127.0.0.1') throw new Error('Embedded sessions require a loopback listener');
   await inTransaction(pool, ensureDeviceAccount);
 }
-await loadAiKey(pool, process.env.DATA_DIRECTORY ?? './data', process.env.AI_ENCRYPTION_KEY);
-const app = createShellApp(pool, process.env.INTERNAL_SECRET ?? '', origins);
+const master = await loadAiKey(pool, process.env.DATA_DIRECTORY ?? './data', process.env.AI_ENCRYPTION_KEY);
+const embed = await ensureVectorIndex(pool) ? createEmbeddings(master,fetch,pool) : undefined;
+const stopEmbeddings = embed && startEmbeddingWorker(pool,embed);
+const app = createShellApp(pool, process.env.INTERNAL_SECRET ?? '', origins, undefined, undefined, embed);
 const stopPurgeRetries = startPurgeRetries(pool, roomPurger(process.env.INTERNAL_SECRET!));
 const server = serve({ fetch: app.fetch, port, hostname: process.env.BLOK_LISTEN_HOST }, () => console.info(`Shell backend listening on port ${port}`));
 
 function shutdown() {
-  server.close(() => { void stopPurgeRetries().then(() => pool.end()); });
+  server.close(() => { void Promise.all([stopPurgeRetries(),stopEmbeddings?.()]).then(() => pool.end()); });
 }
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);

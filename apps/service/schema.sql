@@ -458,3 +458,30 @@ BEGIN
     INSERT INTO schema_migrations(version) VALUES(26);
   END IF;
 END $$;
+
+-- Background embedding is a separate opt-in from the shared chat credential.
+ALTER TABLE ai_credentials ADD COLUMN IF NOT EXISTS embeddings_enabled boolean NOT NULL DEFAULT false;
+INSERT INTO schema_migrations(version) VALUES(27) ON CONFLICT DO NOTHING;
+
+-- Daily UTC aggregates. The empty actor is reserved for background indexing.
+CREATE TABLE IF NOT EXISTS ai_usage_daily (
+  workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  day date NOT NULL,
+  actor text NOT NULL,
+  feature text NOT NULL CHECK (feature IN ('chat','edit','query','index')),
+  calls bigint NOT NULL DEFAULT 0,
+  tokens bigint NOT NULL DEFAULT 0,
+  measured bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (workspace_id,day,actor,feature)
+);
+INSERT INTO schema_migrations(version) VALUES(28) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS ai_usage_model_daily (
+  workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  day date NOT NULL, actor text NOT NULL, feature text NOT NULL, model text NOT NULL,
+  standard boolean NOT NULL, calls bigint NOT NULL, tokens bigint NOT NULL,
+  measured bigint NOT NULL, detailed bigint NOT NULL, input bigint NOT NULL,
+  cached bigint NOT NULL, output bigint NOT NULL,
+  PRIMARY KEY(workspace_id, day, actor, feature, model, standard)
+);
+INSERT INTO schema_migrations(version) VALUES(29) ON CONFLICT DO NOTHING;

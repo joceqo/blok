@@ -8,7 +8,7 @@ const databaseUrl = process.env.SHELL_TEST_DATABASE_URL;
 describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema', () => {
   const schema = 'test_teams_' + randomUUID().replaceAll('-', '');
   const admin = new pg.Pool({ connectionString: databaseUrl });
-  const db = new pg.Pool({ connectionString: databaseUrl, options: '-csearch_path=' + schema });
+  const db = new pg.Pool({ connectionString: databaseUrl, options: '-csearch_path=' + schema + ' -c jit=off' });
   const app = createShellApp(db, 't'.repeat(32), new Set());
 
   function call(path = '', method = 'GET', body?: object, user = 'member', workspace = 'demo') {

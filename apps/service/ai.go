@@ -3,6 +3,7 @@ package cloud
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -339,6 +340,32 @@ func (s *Service) aiResponse(w http.ResponseWriter, r *http.Request, u identity,
 	return raw, true
 }
 
+func aiImageMessage(raw json.RawMessage) (string, any, bool) {
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL string `json:"image_url"`
+	}
+	if json.Unmarshal(raw, &parts) != nil || len(parts) < 2 || len(parts) > 5 || parts[0].Type != "input_text" {
+		return "", nil, false
+	}
+	content := []map[string]string{{"type": "input_text", "text": parts[0].Text}}
+	size := 0
+	for _, part := range parts[1:] {
+		prefix, encoded, ok := strings.Cut(part.ImageURL, ";base64,")
+		if !ok || part.Type != "input_image" || (prefix != "data:image/png" && prefix != "data:image/jpeg" && prefix != "data:image/webp") {
+			return "", nil, false
+		}
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		size += len(data)
+		if err != nil || len(data) == 0 || size > 5<<20 {
+			return "", nil, false
+		}
+		content = append(content, map[string]string{"type": "input_image", "image_url": part.ImageURL})
+	}
+	return parts[0].Text, content, true
+}
+
 func (s *Service) aiRespond(w http.ResponseWriter, r *http.Request, u identity, ws Workspace) {
 	if r.Method != "POST" {
 		problem(w, 405, "Méthode non autorisée")
@@ -348,11 +375,11 @@ func (s *Service) aiRespond(w http.ResponseWriter, r *http.Request, u identity, 
 		Model    string `json:"model"`
 		System   string `json:"system"`
 		Messages []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
+	r.Body = http.MaxBytesReader(w, r.Body, 7<<20)
 	if !body(w, r, &in) {
 		return
 	}
@@ -361,12 +388,32 @@ func (s *Service) aiRespond(w http.ResponseWriter, r *http.Request, u identity, 
 		return
 	}
 	size := len(in.System)
-	for _, m := range in.Messages {
-		if (m.Role != "user" && m.Role != "assistant") || !utf8.ValidString(m.Content) || m.Content == "" {
-			problem(w, 400, "Les messages doivent contenir du texte utilisateur ou assistant")
+	history := make([]map[string]any, 0, len(in.Messages))
+	for i, m := range in.Messages {
+		if m.Role != "user" && m.Role != "assistant" {
+			problem(w, 400, "Rôle IA invalide")
 			return
 		}
-		size += len(m.Content)
+		var text string
+		var content any
+		if json.Unmarshal(m.Content, &text) == nil {
+			content = text
+		} else {
+			var ok bool
+			if m.Role == "user" && i == len(in.Messages)-1 {
+				text, content, ok = aiImageMessage(m.Content)
+			}
+			if !ok {
+				problem(w, 400, "Message avec images invalide")
+				return
+			}
+		}
+		if !utf8.ValidString(text) || text == "" {
+			problem(w, 400, "Texte IA invalide")
+			return
+		}
+		size += len(text)
+		history = append(history, map[string]any{"role": m.Role, "content": content})
 	}
 	if size > aiMaxInputBytes {
 		problem(w, 400, "La demande IA dépasse 64 Kio. Réduisez le contexte")
@@ -384,7 +431,7 @@ func (s *Service) aiRespond(w http.ResponseWriter, r *http.Request, u identity, 
 		problem(w, 400, "Choisissez d’abord un modèle OpenAI")
 		return
 	}
-	raw, ok := s.aiResponse(w, r, u, credential, map[string]any{"model": model, "instructions": in.System, "input": in.Messages, "store": false, "max_output_tokens": aiMaxOutputTokens})
+	raw, ok := s.aiResponse(w, r, u, credential, map[string]any{"model": model, "instructions": in.System, "input": history, "store": false, "max_output_tokens": aiMaxOutputTokens})
 	if !ok {
 		return
 	}

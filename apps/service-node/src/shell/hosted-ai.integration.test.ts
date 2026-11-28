@@ -29,7 +29,7 @@ describe.skipIf(!url)('hosted AI against the canonical schema',() => {
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     return Response.json(String(url).endsWith('models')
       ? {data:[{id:'gpt-test'},{id:'gpt-audio'},{id:'gpt-test'}]}
-      : {status:'completed',model:'gpt-test',output:payload.tools
+      : {status:'completed',model:'gpt-test',usage:{input_tokens:12,input_tokens_details:{cached_tokens:2},output_tokens:5,total_tokens:17},output:payload.tools
         ? [{type:'function_call',arguments:'{}',call_id:'one',name:'blok_read'}]
         : [{type:'message',content:[{type:'output_text',text:'bonjour'}]}]});
   };
@@ -61,7 +61,21 @@ describe.skipIf(!url)('hosted AI against the canonical schema',() => {
     expect(requests.at(-1)?.payload.store).toBe(false);
     const edit = {model:'gpt-test',instructions:'',input:[{role:'user',content:'test'}],tools:[{name:'blok_read',type:'function',parameters:{type:'object'},description:'read'}]};
     expect(await (await api('bob','/editor-respond','POST',edit)).json()).toMatchObject({output:[{name:'blok_read'}]});
+    const day = new Date().toISOString().slice(0,10);
+    const usage = '/usage?end='+day+'&days=7';
+    expect(await (await api('bob',usage)).json()).toMatchObject({rows:[
+      {day,feature:'chat',model:'gpt-test',calls:1,tokens:17,measured:1,input:12,cached:2,output:5,detailed:1},
+      {day,feature:'edit',calls:1,tokens:17,measured:1},
+    ]});
+    expect(await (await api('alice',usage)).json()).toEqual({rows:[]});
+    expect((await api('unknown',usage)).status).toBe(401);
+    expect((await api('bob','/usage?days=7&end=2026-02-30')).status).toBe(400);
     expect((await api('bob','/editor-respond','POST',{...edit,tools:[]})).status).toBe(502);
+    const content = [{type:'input_text',text:'Que vois-tu ?'},{type:'input_image',image_url:'data:image/png;base64,YWJj'}];
+    expect((await api('bob','/respond','POST',{messages:[{role:'user',content}]})).status).toBe(200);
+    expect(requests.at(-1)?.payload.input).toEqual([{role:'user',content}]);
+    const external = [content[0],{type:'input_image',image_url:'https://example.com/photo.png'}];
+    expect((await api('bob','/respond','POST',{messages:[{role:'user',content:external}]})).status).toBe(400);
     expect((await api('bob','/credentials?scope=personal','DELETE')).status).toBe(200);
     expect(await (await api('bob','')).json()).toMatchObject({effective:{source:'workspace'}});
   });

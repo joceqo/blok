@@ -7,7 +7,7 @@ describe('chunkBlocks', () => {
   it('keeps a short page in one chunk and remembers every block it covers', () => {
     const chunks = chunkBlocks([block('a', 'Le héron pêche.'), block('b', 'La marmotte dort.')]);
 
-    expect(chunks).toEqual([{ index: 0, text: 'Le héron pêche.\nLa marmotte dort.', blockIds: ['a', 'b'] }]);
+    expect(chunks).toEqual([{ index: 0, text: 'Le héron pêche.\nLa marmotte dort.', blockIds: ['a', 'b'], context: '' }]);
   });
 
   it('never cuts inside a block: a block that would overflow starts the next chunk', () => {
@@ -29,6 +29,12 @@ describe('chunkBlocks', () => {
       .toBe(huge.replace(/\s+/g, ' ').trim());
   });
 
+  it('preserves Unicode characters across a hard split', () => {
+    const body = 'a'.repeat(CHUNK_TARGET - 1) + '🐢fin';
+    const chunks = chunkBlocks([block('emoji', body)]);
+    expect(chunks.map(chunk => Buffer.from(chunk.text).toString()).join('')).toBe(body);
+  });
+
   it('numbers chunks in reading order', () => {
     const long = 'y'.repeat(CHUNK_TARGET);
     const chunks = chunkBlocks([block('a', long), block('b', long), block('c', long)]);
@@ -44,6 +50,56 @@ describe('chunkBlocks', () => {
   it('keeps a block that has no id: its text is still searchable, it just cites nothing', () => {
     const chunks = chunkBlocks([block(null, 'Texte sans identifiant.')]);
 
-    expect(chunks).toEqual([{ index: 0, text: 'Texte sans identifiant.', blockIds: [] }]);
+    expect(chunks).toEqual([{ index: 0, text: 'Texte sans identifiant.', blockIds: [], context: '' }]);
+  });
+});
+
+/**
+ * A chunk embedded alone says nothing about where it comes from. "Il faut prévenir le service"
+ * is unfindable; "Ressources humaines › Procédure de départ — Les démarches : il faut prévenir le
+ * service" answers a question asked in someone else's words. The context is embedded with the
+ * chunk and kept apart from it, so what the reader is shown stays the text that was written.
+ */
+describe('chunk context', () => {
+  const page = ['Ressources humaines', 'Procédure de départ'];
+
+  it('names the page and its ancestors on every chunk', () => {
+    const chunks = chunkBlocks([block('a', 'Il faut prévenir le service.')], page);
+
+    expect(chunks[0]!.context).toBe('Ressources humaines › Procédure de départ');
+    // The text stays what was written: the context is for the vector, not for the reader.
+    expect(chunks[0]!.text).toBe('Il faut prévenir le service.');
+  });
+
+  it('carries the heading a chunk sits under, and forgets it at the next one', () => {
+    const chunks = chunkBlocks(
+      [
+        { blockId: 'h1', body: 'Les démarches', type: 'header' },
+        { blockId: 'p1', body: 'x'.repeat(CHUNK_TARGET) },
+        { blockId: 'h2', body: 'Le matériel', type: 'header' },
+        { blockId: 'p2', body: 'y'.repeat(CHUNK_TARGET) },
+      ],
+      page,
+    );
+
+    expect(chunks.map(chunk => chunk.context)).toEqual([
+      'Ressources humaines › Procédure de départ — Les démarches',
+      'Ressources humaines › Procédure de départ — Les démarches',
+      'Ressources humaines › Procédure de départ — Le matériel',
+      'Ressources humaines › Procédure de départ — Le matériel',
+    ]);
+  });
+
+  it('names the database a row belongs to, the way AFFiNE names it', () => {
+    const chunks = chunkBlocks(
+      [{ blockId: 'r1', body: 'Rendez-vous en mairie', type: 'database-row', parentName: 'Démarches' }],
+      page,
+    );
+
+    expect(chunks[0]!.context).toBe('Ressources humaines › Procédure de départ — Démarches');
+  });
+
+  it('says nothing when there is nothing to say', () => {
+    expect(chunkBlocks([block('a', 'Seul au monde.')], [])[0]!.context).toBe('');
   });
 });

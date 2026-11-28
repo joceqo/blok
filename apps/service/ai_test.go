@@ -399,3 +399,14 @@ func TestAIUpstreamCancellationAndSanitizedFailure(t *testing.T) {
 		t.Fatal("provider error body not discarded")
 	}
 }
+
+func TestAIChatImageInput(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"data:image/png;base64,YWJj"}]`)
+	text, _, ok := aiImageMessage(raw)
+	if !ok || text != "hello" {
+		t.Fatal("inline image was rejected")
+	}
+	if _, _, ok := aiImageMessage(json.RawMessage(`[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"https://example.org/image.png"}]`)); ok {
+		t.Fatal("external image URL was accepted")
+	}
+}

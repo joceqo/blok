@@ -7,9 +7,11 @@ import { editorItem, editorRequest, modelId, object, textModel } from './ai-edit
 import { sessionDigest } from './session.ts';
 import { readWorkspaceScope, WorkspaceError } from './workspace-scope.ts';
 
+import { recordAiUsage } from './ai-usage.ts';
+
 type Scope = Awaited<ReturnType<typeof readWorkspaceScope>>;
-interface Credential { scope: string; owner_id: string; model: string; encrypted_key: Buffer | null }
-class AiError extends Error {
+interface Credential { scope: string; owner_id: string; model: string; encrypted_key: Buffer | null; embeddings_enabled: boolean }
+export class AiError extends Error {
   constructor(readonly status: 400 | 401 | 403 | 409 | 422 | 429 | 502 | 503 | 504, message: string) { super(message); }
 }
 const state = (v?: Credential) => ({ configured: !!v?.encrypted_key?.length, model: v?.model ?? '' });
@@ -21,7 +23,7 @@ function scopeOwner(scope: unknown, user: Scope) {
   return user.workspace_id;
 }
 
-async function provider(fetcher: typeof fetch, key: string, path: 'models'|'responses', payload: unknown, signal: AbortSignal) {
+export async function provider(fetcher: typeof fetch, key: string, path: 'models'|'responses'|'embeddings', payload: unknown, signal: AbortSignal) {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(path === 'models' ? 20_000 : 60_000)]);
   try {
     const response = await fetcher('https://api.openai.com/v1/' + path, {
@@ -56,7 +58,7 @@ async function provider(fetcher: typeof fetch, key: string, path: 'models'|'resp
 }
 
 export function createHostedAi(pool: PgPool, fetcher: typeof fetch = fetch, keySource = (db: Pick<PgPool,'query'>) =>
-  loadAiKey(db, process.env.DATA_DIRECTORY || '/data', process.env.AI_ENCRYPTION_KEY)) {
+  loadAiKey(db, process.env.DATA_DIRECTORY || '/data', process.env.AI_ENCRYPTION_KEY), embeddingsAvailable = false) {
   const app = new Hono();
   const active = new Map<string, number>();
   let cachedKey: Promise<Buffer> | undefined;
@@ -81,7 +83,7 @@ export function createHostedAi(pool: PgPool, fetcher: typeof fetch = fetch, keyS
   async function settings(c: Context) {
     return scoped(c,false,async(db,user) => {
       const {rows} = await db.query<Credential>(
-        "SELECT scope,owner_id,model,encrypted_key FROM ai_credentials WHERE (scope='personal' AND owner_id=$1) OR (scope='workspace' AND owner_id=$2)",
+        "SELECT scope,owner_id,model,encrypted_key,embeddings_enabled FROM ai_credentials WHERE (scope='personal' AND owner_id=$1) OR (scope='workspace' AND owner_id=$2)",
         [user.user_id,user.workspace_id]);
       const personal = rows.find(r => r.scope === 'personal'), workspace = rows.find(r => r.scope === 'workspace');
       const effective = personal?.encrypted_key ? personal : workspace?.encrypted_key ? workspace : undefined;
@@ -91,9 +93,46 @@ export function createHostedAi(pool: PgPool, fetcher: typeof fetch = fetch, keyS
   app.get('/',async c => {
     const s = await settings(c);
     return c.json({ personal:state(s.personal), workspace:state(s.workspace),
-      effective:{source:s.effective?.scope ?? 'none',model:s.effective?.model ?? ''}, canManageWorkspace:s.user.role === 'admin' });
+      effective:{source:s.effective?.scope ?? 'none',model:s.effective?.model ?? ''}, canManageWorkspace:s.user.role === 'admin',
+      ...(embeddingsAvailable && {embeddingsEnabled:s.workspace?.embeddings_enabled ?? false}) });
+  });
+  app.get('/usage',async c => {
+    const end = c.req.query('end') ?? '';
+    const days = c.req.query('days');
+    const date = new Date(end+'T00:00:00Z');
+    if (!['7','30'].includes(days ?? '') || !/^\d{4}-\d{2}-\d{2}$/.test(end) || !Number.isFinite(date.getTime())
+      || date.toISOString().slice(0,10) !== end) throw new AiError(400,'Période invalide');
+    return c.json(await scoped(c,false,async(db,user) => {
+      // Older installations retained totals. Only the fixed-profile embeddings can be attributed retrospectively.
+      const {rows} = await db.query(`SELECT to_char(day,'YYYY-MM-DD') AS day,feature,model,standard,
+        calls::float8,tokens::float8,measured::float8,detailed::float8,input::float8,cached::float8,output::float8 FROM (
+        SELECT workspace_id,day,actor,feature,model,standard,calls,tokens,measured,detailed,input,cached,output FROM ai_usage_model_daily
+        UNION ALL SELECT workspace_id,day,actor,feature,CASE WHEN feature IN ('index','query') THEN 'text-embedding-3-small' ELSE '' END,true,
+          calls,tokens,measured,CASE WHEN feature IN ('index','query') THEN measured ELSE 0 END,
+          CASE WHEN feature IN ('index','query') THEN tokens ELSE 0 END,0,0 FROM ai_usage_daily
+        ) u WHERE workspace_id=$1 AND (actor=$2 OR (actor='' AND $3 AND feature='index'))
+        AND day BETWEEN $4::date-($5::int-1) AND $4::date ORDER BY day,feature,model`,
+        [user.workspace_id,user.user_id,user.role==='admin',end,days]);
+      if (!embeddingsAvailable || user.role!=='admin') return {rows};
+      const {rows:[index]}=await db.query(`SELECT EXISTS(SELECT 1 FROM ai_credentials WHERE scope='workspace' AND owner_id=$1 AND embeddings_enabled AND encrypted_key IS NOT NULL) AS enabled,
+        count(*)::int AS pages,count(*) FILTER (WHERE j.page_id IS NOT NULL AND j.due_at IS NULL)::int AS processed,
+        (SELECT count(*)::int FROM page_chunks WHERE workspace_id=$1) AS passages
+        FROM pages p LEFT JOIN page_embedding_jobs j ON j.page_id=p.id WHERE p.workspace_id=$1 AND NOT p.deleted AND NOT p.trashed`,[user.workspace_id]);
+      return {rows,index};
+    }));
   });
   const limit = (maxSize: number) => bodyLimit({maxSize,onError:c => c.json({error:'Requête trop longue'},413)});
+  app.put('/embeddings',limit(1024),async c => {
+    const input = await c.req.json().catch(() => null);
+    if (typeof input?.enabled !== 'boolean') throw new AiError(400,'Activation invalide');
+    await scoped(c,true,async (db,user) => {
+      const owner = scopeOwner('workspace',user);
+      if (!embeddingsAvailable) throw new AiError(409,'Extension vectorielle indisponible');
+      const updated = await db.query("UPDATE ai_credentials SET embeddings_enabled=$2 WHERE scope='workspace' AND owner_id=$1 AND encrypted_key IS NOT NULL",[owner,input.enabled]);
+      if (!updated.rowCount) throw new AiError(409,'Ajoutez une clé OpenAI partagée');
+    });
+    return c.json({ok:true});
+  });
   app.put('/credentials',limit(8192),async c => {
     const input: unknown = await c.req.json().catch(() => null);
     if (!object(input) || (input.apiKey == null && input.model == null)) throw new AiError(400,'Indiquez une clé ou un modèle');
@@ -131,7 +170,7 @@ export function createHostedAi(pool: PgPool, fetcher: typeof fetch = fetch, keyS
     try {
       let secret: string;
       try { secret = openAiKey(await key(),cred.scope+':'+cred.owner_id,cred.encrypted_key); } catch { throw new AiError(503,'Impossible de déchiffrer les identifiants IA'); }
-      return {out:await provider(fetcher,secret,path,payload,c.req.raw.signal),cred};
+      return {out:await provider(fetcher,secret,path,payload,c.req.raw.signal),cred,user:s.user};
     } finally {
       if (path === 'responses') { const rest = active.get(uid)!-1; if (rest) active.set(uid,rest); else active.delete(uid); }
     }
@@ -146,20 +185,38 @@ export function createHostedAi(pool: PgPool, fetcher: typeof fetch = fetch, keyS
     }
     return c.json({models:[...ids].sort().map(id => ({id})),source:cred.scope});
   });
-  app.post('/respond',limit(128<<10),async c => {
+  app.post('/respond',limit(7<<20),async c => {
     const input: unknown = await c.req.json().catch(() => null);
     if (!object(input)) throw new AiError(400,'Messages IA invalides');
     const system = input.system ?? '', messages = input.messages;
     if (typeof system !== 'string' || Buffer.byteLength(system)>16<<10 || !Array.isArray(messages) || !messages.length || messages.length>32) throw new AiError(400,'Historique IA invalide');
     let bytes = Buffer.byteLength(system);
-    const history = messages.map(item => {
-      if (!object(item) || !['user','assistant'].includes(String(item.role)) || typeof item.content !== 'string' || !item.content) throw new AiError(400,'Message IA invalide');
-      bytes += Buffer.byteLength(item.content);
-      return {role:item.role,content:item.content};
+    const history = messages.map((item, index) => {
+      if (!object(item) || !['user','assistant'].includes(String(item.role))) throw new AiError(400,'Message IA invalide');
+      if (typeof item.content === 'string' && item.content) {
+        bytes += Buffer.byteLength(item.content);
+        return {role:item.role,content:item.content};
+      }
+      const parts = item.content;
+      if (item.role !== 'user' || index !== messages.length - 1 || !Array.isArray(parts) ||
+          parts.length < 2 || parts.length > 5 || !object(parts[0]) || parts[0].type !== 'input_text' ||
+          typeof parts[0].text !== 'string' || !parts[0].text) throw new AiError(400,'Message avec images invalide');
+      bytes += Buffer.byteLength(parts[0].text);
+      let imageBytes = 0;
+      const images = parts.slice(1).map(part => {
+        if (!object(part) || part.type !== 'input_image' || typeof part.image_url !== 'string')
+          throw new AiError(400,'Image invalide');
+        const encoded = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(part.image_url)?.[1];
+        if (encoded === undefined || encoded.length % 4 !== 0) throw new AiError(400,'Image invalide');
+        imageBytes += Buffer.byteLength(encoded, 'base64');
+        if (imageBytes > 5 << 20) throw new AiError(400,'Les images dépassent 5 Mio');
+        return {type:'input_image',image_url:part.image_url};
+      });
+      return {role:'user',content:[{type:'input_text',text:parts[0].text}, ...images]};
     });
     if (bytes > 64<<10) throw new AiError(400,'La demande IA dépasse 64 Kio');
     let model: string;
-    const {out,cred} = await call(c,'responses',credential => {
+    const {out,cred,user} = await call(c,'responses',credential => {
       const requested = input.model || credential.model;
       if (!modelId(requested)) throw new AiError(400,'Choisissez un modèle OpenAI');
       model = requested;
@@ -169,16 +226,18 @@ export function createHostedAi(pool: PgPool, fetcher: typeof fetch = fetch, keyS
     const text = out.output.flatMap(item => object(item) && item.type === 'message' && Array.isArray(item.content) ? item.content : [])
       .filter(p => object(p) && p.type === 'output_text' && typeof p.text === 'string').map(p => p.text).join('');
     if (!text || Buffer.byteLength(text) > 64<<10) throw new AiError(502,'Réponse OpenAI invalide');
+    await recordAiUsage(pool,user.workspace_id,user.user_id,'chat',out.usage,out.model ?? model!,out.service_tier);
     return c.json({text,model:modelId(out.model) ? out.model : model!,source:cred.scope});
   });
   app.post('/editor-respond',limit(512<<10),async c => {
     const input: unknown = await c.req.json().catch(() => null);
     if (!object(input) || !editorRequest(input)) throw new AiError(400,'Requête de l’assistant d’édition invalide');
-    const {out} = await call(c,'responses',() => ({...input,store:false,stream:false,max_output_tokens:4096}));
+    const {out,user} = await call(c,'responses',() => ({...input,store:false,stream:false,max_output_tokens:4096}));
     const offered = new Set((input.tools as {name:string}[]).map(t => t.name));
     if (!['completed','incomplete'].includes(String(out.status)) || !Array.isArray(out.output) ||
         (!out.output.length && out.status === 'completed') || !out.output.every(item => editorItem(item,true) &&
         (item.type !== 'function_call' || offered.has(item.name)))) throw new AiError(502,'Réponse de l’assistant d’édition invalide');
+    await recordAiUsage(pool,user.workspace_id,user.user_id,'edit',out.usage,out.model ?? input.model,out.service_tier);
     return c.json({status:out.status,model:out.model,output:out.output,incomplete_details:out.incomplete_details});
   });
   return app;

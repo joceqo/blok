@@ -1,14 +1,15 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PgPool } from '../db/pool.ts';
+import { requestIdOf } from '../middleware/observe.ts';
 import { sessionDigest } from './session.ts';
 import { pageBlockText } from './page-search-text.ts';
 import { loadIndexPages, pageStandings } from './workspace-index.ts';
 import { readWorkspaceScope, WorkspaceError } from './workspace-scope.ts';
 
-interface Source { id: string; title: string; excerpt: string; blockId?: string }
+import { embedQuestion, mergeHits, semanticHits, type SearchHit, type createEmbeddings } from './embeddings.ts';
 
-export function createWorkspaceSearch(pool: PgPool) {
+export function createWorkspaceSearch(pool: PgPool, embed?: ReturnType<typeof createEmbeddings>) {
   const router = new Hono();
   router.post('/', bodyLimit({ maxSize: 8192, onError: c => c.json({ error: 'Question trop longue' }, 413) }), async c => {
     const key = sessionDigest(c);
@@ -17,6 +18,12 @@ export function createWorkspaceSearch(pool: PgPool) {
     const question = typeof body?.query === 'string' ? body.query.trim() : '';
     if (!question || question.length > 1200) return c.json({ error: 'La recherche accepte entre 1 et 1 200 caractères.' }, 400);
     const palette = body?.mode === 'palette';
+    const queryVector = !palette && embed ? await embedQuestion(pool,embed,key,c.req.param('slug')!,question,c.req.raw.signal)
+      .catch(error => {
+        if (c.req.raw.signal.aborted) throw error;
+        // A missing or unavailable provider leaves the lexical path available.
+        return undefined;
+      }) : undefined;
     const client = await pool.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -27,7 +34,7 @@ export function createWorkspaceSearch(pool: PgPool) {
       const ids = rows.filter(row => !row.trashed && standing[row.id]).map(row => row.id);
       // One row per block, so the best-ranked block of a page becomes the citation. The LEFT JOIN
       // keeps a page whose title alone matches, and a block with no id simply cites nothing.
-      const result = await client.query<Source & { blockId: string | null }>(`
+      const result = await client.query<SearchHit>(`
         WITH terms AS (
           SELECT to_tsquery('french', string_agg(quote_literal(term) || CASE WHEN $4 THEN ':*' ELSE '' END,' | ')) AS q
           FROM unnest(tsvector_to_array(to_tsvector('french',translate($3,'’‘ʼ','   ')))) AS term
@@ -45,9 +52,21 @@ export function createWorkspaceSearch(pool: PgPool) {
         SELECT id,title,block_id AS "blockId",
           left(ts_headline('french',coalesce(body,title),q,'MaxWords=45,MinWords=12,StartSel="",StopSel=""'),800) AS excerpt
           FROM hits ORDER BY rank DESC,id LIMIT $5`, [workspace_id, ids, question, palette, palette ? 40 : 5]);
+      let sources = result.rows;
+      if (queryVector?.workspace === workspace_id) {
+        await client.query('SAVEPOINT semantic');
+        try {
+          const hits = await semanticHits(client,workspace_id,ids,queryVector.vector,5);
+          sources = mergeHits(sources,hits,5);
+          console.info(JSON.stringify({event:'search.hybrid', request:requestIdOf(c),lexical:result.rowCount,semantic:hits.length,returned:sources.length}));
+        } catch {
+          await client.query('ROLLBACK TO SAVEPOINT semantic');
+          console.warn(JSON.stringify({event:'search.fallback',request:requestIdOf(c),reason:'vector_query_failed'}));
+        }
+      }
       await client.query('COMMIT');
       // A page cited without a block leaves the key out rather than sending null.
-      return c.json({ sources: result.rows.map(({ blockId, ...source }) => (blockId === null ? source : { ...source, blockId })) });
+      return c.json({ sources: sources.map(({ blockId, ...source }) => (blockId === null ? source : { ...source, blockId })) });
     } catch (error) {
       await client.query('ROLLBACK');
       if (error instanceof WorkspaceError) return c.json({ error: error.message }, error.status);
