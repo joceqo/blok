@@ -1,17 +1,34 @@
 /**
- * One sideways gesture over the time grid, from the first wheel event to the
- * day it lands on.
+ * One scroll gesture over a calendar that pages: the week grid sideways by
+ * columns of days, the month grid downwards by rows of weeks. A "step" is one
+ * of those, and a "page" is the ones on screen.
  *
- * A trackpad does not stop when the fingers leave it: macOS keeps sending
- * momentum events for well over a second, and Windows precision trackpads do
- * the same. Adding all of them to one jump sent the calendar months away from
- * a single flick, and grew the grid's buffer to hundreds of columns while it
- * travelled. So a gesture carries at most one page of columns, and whatever
- * momentum follows is ignored until the wheel goes quiet.
+ * The grid follows the fingers one pixel for one pixel, which is what makes
+ * the gesture feel like the calendar is being dragged. What it must not do is
+ * take the momentum for travel: a trackpad does not stop when the fingers
+ * leave it, and macOS keeps sending events for over a second. Adding all of
+ * them to one jump, with no cap, sent the calendar from June to November on a
+ * single swipe, and grew the grid's buffer to a hundred and fifty columns on
+ * the way.
+ *
+ * So the gesture is capped where it is not felt — in how far it travels — and
+ * left alone where it is: past a page, the grid still follows, with the give
+ * of a rubber band rather than a wall.
  */
 
 /** A line of a wheel that reports its steps in lines (`deltaMode` 1) */
 const LINE_DELTA_PX = 16;
+
+/** How much of each pixel past a page the grid still follows */
+const RUBBER_BAND = 0.15;
+
+/**
+ * The furthest the grid goes past a page, in steps. The buffer it draws is
+ * sized once from this, so no gesture can make it grow — growing it mid-swipe
+ * meant regenerating every column and every recurring event on the way, which
+ * is what turned a brisk swipe into a stutter.
+ */
+const MAX_GIVE_STEPS = 1;
 
 /** The pixels one of a wheel event's steps stands for */
 function wheelUnit(deltaMode: number, pageWidth: number): number {
@@ -28,23 +45,16 @@ export interface WheelLike {
   shiftKey: boolean;
 }
 
-/** Where a gesture stands: its grid shift, and whether it has already landed */
+/** Where a gesture stands */
 export interface FlickState {
-  /** Pixels the grid is shifted by, against the direction of travel */
+  /** Everything the gesture has asked for, momentum included */
+  travelled: number;
+  /** Pixels the grid is shifted by: the above, with give past a page */
   offset: number;
-  /** The gesture reached a full page and has moved: its momentum is spent */
-  spent: boolean;
-}
-
-/** What one wheel event does: the gesture's new state, and the days to travel now */
-export interface FlickStep {
-  state: FlickState;
-  /** `0` while the gesture is still under way */
-  commitDays: number;
 }
 
 /** No gesture under way */
-export const restingFlick: FlickState = { offset: 0, spent: false };
+export const restingFlick: FlickState = { travelled: 0, offset: 0 };
 
 /**
  * The sideways pixels a wheel event asks for, or `null` when it is a vertical
@@ -73,67 +83,79 @@ export function horizontalWheelDelta(
 /**
  * Whether this is one notch of a mouse wheel rather than part of a swipe.
  *
- * Notches come seconds apart and carry a fraction of a page, so adding them up
- * the way a swipe is added up would never move the view. Each is a step of its
- * own instead. A mouse has no sideways wheel, so Shift is how it scrolls
- * sideways, and Firefox reports a wheel in lines or pages rather than pixels.
+ * Notches come far apart and carry a fraction of a column, so a gesture made
+ * of them would be over between any two of them. Each is a day of its own
+ * instead. Firefox reports a wheel in lines or pages rather than pixels.
  */
 export function isDetentWheel(event: WheelLike): boolean {
   return event.shiftKey || event.deltaMode !== 0;
 }
 
-/** How far one gesture may shift the grid: the columns on screen, and no more */
-export function flickLimit(dayColumnWidth: number, visibleDays: number): number {
-  return Math.max(1, visibleDays) * Math.max(0, dayColumnWidth);
+/** A page of steps: as far as one gesture travels, however long it runs */
+export function flickLimit(stepSize: number, pageSteps: number): number {
+  return Math.max(1, pageSteps) * Math.max(0, stepSize);
 }
 
-/** The days a grid shift stands for. The grid shifts against the direction of travel. */
-export function flickDays(offset: number, dayColumnWidth: number): number {
-  return dayColumnWidth > 0 ? -Math.round(offset / dayColumnWidth) : 0;
+/** The steps a grid shift stands for. The grid shifts against the direction of travel. */
+export function flickSteps(offset: number, stepSize: number): number {
+  return stepSize > 0 ? -Math.round(offset / stepSize) : 0;
+}
+
+/** Past a page, each pixel still moves the grid, by less and less of itself */
+function withGive(
+  travelled: number,
+  limit: number,
+  stepSize: number,
+): number {
+  if (limit <= 0 || Math.abs(travelled) <= limit) return travelled;
+  const past = Math.abs(travelled) - limit;
+  const give = Math.min(past * RUBBER_BAND, stepSize * MAX_GIVE_STEPS);
+  return Math.sign(travelled) * (limit + give);
+}
+
+/** Steps the grid draws on each side of the visible ones, a fixed number */
+export function bufferSteps(pageSteps: number): number {
+  return Math.max(1, pageSteps) + MAX_GIVE_STEPS;
 }
 
 /** Takes one wheel event into the gesture */
 export function advanceFlick(
   state: FlickState,
   deltaPx: number,
-  dayColumnWidth: number,
-  visibleDays: number,
-): FlickStep {
-  if (state.spent) return { state, commitDays: 0 };
-
-  const limit = flickLimit(dayColumnWidth, visibleDays);
-  const offset = Math.min(Math.max(state.offset + deltaPx, -limit), limit);
-  if (limit > 0 && Math.abs(offset) >= limit) {
-    return {
-      state: { offset, spent: true },
-      commitDays: flickDays(offset, dayColumnWidth),
-    };
-  }
-  return { state: { offset, spent: false }, commitDays: 0 };
+  stepSize: number,
+  pageSteps: number,
+): FlickState {
+  const travelled = state.travelled + deltaPx;
+  return {
+    travelled,
+    offset: withGive(
+      travelled,
+      flickLimit(stepSize, pageSteps),
+      stepSize,
+    ),
+  };
 }
 
 /**
- * The days to travel when the wheel goes quiet, snapping to the nearest stop.
+ * The steps to travel once the wheel goes quiet.
  *
- * `snapStep` is how far the view moves in one step: a day where it shows a
- * rolling range, a whole week where it re-anchors on the first day of one.
- * Landing between two stops of a view that re-anchors would be pulled back,
- * which is why a short gesture there must either carry a page or hold still.
+ * Capped at the columns on screen. Everything past that is momentum the
+ * fingers never asked for, and letting it through is what sent the calendar
+ * months away from a flick.
  */
 export function releaseFlick(
   state: FlickState,
-  dayColumnWidth: number,
-  snapStep = 1,
+  stepSize: number,
+  pageSteps: number,
 ): number {
-  if (state.spent) return 0;
-  const step = Math.max(1, snapStep);
-  if (step === 1) return flickDays(state.offset, dayColumnWidth);
-  return flickDays(state.offset, dayColumnWidth * step) * step;
+  const days = flickSteps(state.travelled, stepSize);
+  const limit = Math.max(1, pageSteps);
+  return Math.min(Math.max(days, -limit), limit);
 }
 
 /**
- * The columns under the viewer's eyes, within the buffered ones the grid draws
- * and slides sideways.
+ * The steps under the viewer's eyes, within the buffered ones the grid draws
+ * and slides.
  *
  * The anchored week is not what is on screen: it stays on the current date
  * while a gesture travels, which is how the "now" line came to be drawn over a
@@ -142,10 +164,10 @@ export function releaseFlick(
 export function onScreenSlice<T>(
   buffered: T[],
   bufferSize: number,
-  scrollDaysDelta: number,
-  visibleDays: number,
+  scrolledSteps: number,
+  pageSteps: number,
 ): T[] {
-  const last = Math.max(0, buffered.length - visibleDays);
-  const start = Math.min(Math.max(bufferSize + scrollDaysDelta, 0), last);
-  return buffered.slice(start, start + visibleDays);
+  const last = Math.max(0, buffered.length - pageSteps);
+  const start = Math.min(Math.max(bufferSize + scrolledSteps, 0), last);
+  return buffered.slice(start, start + pageSteps);
 }

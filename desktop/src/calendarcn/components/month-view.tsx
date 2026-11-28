@@ -22,6 +22,7 @@ import { cn } from "../lib/utils";
 import { useDayRangeDraw } from "../hooks/use-day-range-draw";
 import { useMonthEventDrag } from "../hooks/use-month-event-drag";
 import { useMonthEventResize } from "../hooks/use-month-event-resize";
+import { bufferSteps } from "../lib/scroll-flick";
 import { useVerticalScroll } from "../hooks/use-vertical-scroll";
 import { useEventKeyboard } from "../hooks/use-event-keyboard";
 import {
@@ -57,6 +58,13 @@ import type { MonthWeekRow } from "../lib/event-utils";
 
 /** Base buffer rows on each side (extends dynamically with scroll distance) */
 const BUFFER_ROWS = 2;
+
+/**
+ * Rows one gesture travels at the most: a month, near enough. The buffer is
+ * sized from it, and every row of it is drawn on every frame of the gesture,
+ * so a generous cap is paid for in dropped frames rather than in reach.
+ */
+const SCROLL_ROWS_PER_GESTURE = 4;
 
 interface ContextMenuState {
   x: number;
@@ -244,6 +252,7 @@ export function MonthView({
     useVerticalScroll({
       containerRef: scrollContainerRef,
       rowHeight,
+      visibleRows: SCROLL_ROWS_PER_GESTURE,
       onNavigate: handleScrollNavigate,
       disabled: isDragging || isResizing || isDrawing,
     });
@@ -310,10 +319,11 @@ export function MonthView({
     revealDay,
   });
 
-  // Symmetric buffer: extends in both directions (mirrors week view's dynamicBuffer)
-  const extraScrollRows =
-    rowHeight > 0 ? Math.ceil(Math.abs(scrollOffset) / rowHeight) : 0;
-  const dynamicBuffer = BUFFER_ROWS + extraScrollRows;
+  // Rows drawn above and below the visible ones. A fixed number: no gesture
+  // travels further than a page and a row, so there is nothing left for a
+  // buffer to grow for, and growing it mid-scroll rebuilt every week row on
+  // the way — which is what made three years of months stutter.
+  const dynamicBuffer = Math.max(BUFFER_ROWS, bufferSteps(SCROLL_ROWS_PER_GESTURE));
 
   // Build buffered week rows: dynamicBuffer above + MONTH_VIEW_ROWS + dynamicBuffer below
   const bufferedWeekRows = useMemo(() => {

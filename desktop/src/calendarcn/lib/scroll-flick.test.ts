@@ -1,49 +1,50 @@
 import { describe, expect, it } from 'vitest';
 import {
   advanceFlick,
-  flickDays,
+  flickSteps,
   flickLimit,
   horizontalWheelDelta,
   isDetentWheel,
-  restingFlick,
   onScreenSlice,
   releaseFlick,
+  restingFlick,
 } from './scroll-flick';
 
 /** The week view on a laptop: seven columns of about this width */
 const COLUMN = 150;
 const VISIBLE_DAYS = 7;
+const PAGE = COLUMN * VISIBLE_DAYS;
+
+/** Runs a whole gesture through the tracker */
+const swipe = (steps: number[]) =>
+  steps.reduce(
+    (state, delta) => advanceFlick(state, delta, COLUMN, VISIBLE_DAYS),
+    restingFlick,
+  );
 
 describe('horizontalWheelDelta', () => {
   it('follows a trackpad swipe sideways and lets a vertical one through', () => {
-    expect(horizontalWheelDelta({ deltaX: 40, deltaY: 3, deltaMode: 0, shiftKey: false }, 1050)).toBe(40);
-    expect(horizontalWheelDelta({ deltaX: 2, deltaY: 60, deltaMode: 0, shiftKey: false }, 1050)).toBeNull();
+    expect(horizontalWheelDelta({ deltaX: 40, deltaY: 3, deltaMode: 0, shiftKey: false }, PAGE)).toBe(40);
+    expect(horizontalWheelDelta({ deltaX: 2, deltaY: 60, deltaMode: 0, shiftKey: false }, PAGE)).toBeNull();
   });
 
   it('reads a plain wheel held with Shift, the only sideways gesture a mouse has', () => {
-    expect(horizontalWheelDelta({ deltaX: 0, deltaY: 100, deltaMode: 0, shiftKey: true }, 1050)).toBe(100);
+    expect(horizontalWheelDelta({ deltaX: 0, deltaY: 100, deltaMode: 0, shiftKey: true }, PAGE)).toBe(100);
     // Without Shift the same wheel scrolls the hours, as it always did
-    expect(horizontalWheelDelta({ deltaX: 0, deltaY: 100, deltaMode: 0, shiftKey: false }, 1050)).toBeNull();
+    expect(horizontalWheelDelta({ deltaX: 0, deltaY: 100, deltaMode: 0, shiftKey: false }, PAGE)).toBeNull();
   });
 
   it('converts the lines and pages Firefox reports into pixels', () => {
     // Three lines sideways: a single notch of a Windows wheel
-    expect(horizontalWheelDelta({ deltaX: 3, deltaY: 0, deltaMode: 1, shiftKey: false }, 1050)).toBe(48);
-    expect(horizontalWheelDelta({ deltaX: 1, deltaY: 0, deltaMode: 2, shiftKey: false }, 1050)).toBe(1050);
+    expect(horizontalWheelDelta({ deltaX: 3, deltaY: 0, deltaMode: 1, shiftKey: false }, PAGE)).toBe(48);
+    expect(horizontalWheelDelta({ deltaX: 1, deltaY: 0, deltaMode: 2, shiftKey: false }, PAGE)).toBe(PAGE);
   });
 });
 
 describe('isDetentWheel', () => {
-  // A mouse wheel turns in notches, far apart and far too small to add up to a
-  // gesture. Each notch is a step of its own, or the view would never move.
-  it('reads a wheel held with Shift as a notch', () => {
+  it('reads a wheel held with Shift, and the lines and pages Firefox reports, as notches', () => {
     expect(isDetentWheel({ deltaX: 0, deltaY: 100, deltaMode: 0, shiftKey: true })).toBe(true);
-    expect(isDetentWheel({ deltaX: 100, deltaY: 0, deltaMode: 0, shiftKey: true })).toBe(true);
-  });
-
-  it('reads the lines and pages Firefox reports as notches', () => {
     expect(isDetentWheel({ deltaX: 3, deltaY: 0, deltaMode: 1, shiftKey: false })).toBe(true);
-    expect(isDetentWheel({ deltaX: 1, deltaY: 0, deltaMode: 2, shiftKey: false })).toBe(true);
   });
 
   it('leaves a trackpad swipe to the gesture', () => {
@@ -52,69 +53,54 @@ describe('isDetentWheel', () => {
 });
 
 describe('advanceFlick', () => {
-  it('crosses at most one page per gesture, however long the momentum runs', () => {
-    // A brisk two-finger swipe on macOS: the momentum keeps firing for over a
-    // second, and every one of those events used to be added to the same jump.
-    let state = restingFlick;
-    let travelled = 0;
-    for (let i = 0; i < 60; i++) {
-      const step = advanceFlick(state, -300, COLUMN, VISIBLE_DAYS);
-      state = step.state;
-      travelled += step.commitDays;
-    }
-    expect(travelled).toBe(VISIBLE_DAYS);
-    expect(Math.abs(state.offset)).toBeLessThanOrEqual(flickLimit(COLUMN, VISIBLE_DAYS));
+  it('follows the fingers pixel for pixel', () => {
+    expect(swipe([-40, -60, -50]).offset).toBe(-150);
+    expect(swipe([-40, 60]).offset).toBe(20);
   });
 
-  it('spends the gesture once, so the trailing momentum moves nothing', () => {
-    const start = advanceFlick(restingFlick, -COLUMN * VISIBLE_DAYS, COLUMN, VISIBLE_DAYS);
-    expect(start.commitDays).toBe(VISIBLE_DAYS);
-    expect(start.state.spent).toBe(true);
-    expect(advanceFlick(start.state, -5000, COLUMN, VISIBLE_DAYS).commitDays).toBe(0);
+  it('keeps following past a page, with the give of a rubber band', () => {
+    const past = swipe([-PAGE - 200]);
+    expect(past.offset).toBeLessThan(-PAGE);
+    // It gives, rather than running away with the momentum
+    expect(past.offset).toBeGreaterThan(-PAGE - COLUMN);
   });
 
-  it('holds a short gesture until it is released', () => {
-    const step = advanceFlick(restingFlick, -200, COLUMN, VISIBLE_DAYS);
-    expect(step.commitDays).toBe(0);
-    expect(step.state.offset).toBe(-200);
+  it('never gives more than a column, so the drawn buffer stays a fixed size', () => {
+    // A second of macOS momentum asks for eighteen thousand pixels
+    const long = swipe(Array.from({ length: 60 }, () => -300));
+    expect(long.offset).toBeGreaterThanOrEqual(-PAGE - COLUMN);
+    expect(swipe([PAGE * 40]).offset).toBeLessThanOrEqual(PAGE + COLUMN);
   });
 });
 
 describe('releaseFlick', () => {
-  it('snaps to the nearest column, and back to where it started below half of one', () => {
-    expect(releaseFlick({ offset: -200, spent: false }, COLUMN)).toBe(1);
-    expect(releaseFlick({ offset: -70, spent: false }, COLUMN)).toBe(0);
-    expect(releaseFlick({ offset: 160, spent: false }, COLUMN)).toBe(-1);
+  it('lands on the nearest column, and back where it started below half of one', () => {
+    expect(releaseFlick(swipe([-200]), COLUMN, VISIBLE_DAYS)).toBe(1);
+    expect(releaseFlick(swipe([-70]), COLUMN, VISIBLE_DAYS)).toBe(0);
+    expect(releaseFlick(swipe([-520]), COLUMN, VISIBLE_DAYS)).toBe(3);
+    expect(releaseFlick(swipe([160]), COLUMN, VISIBLE_DAYS)).toBe(-1);
   });
 
-  it('moves nothing more once the gesture has already been spent', () => {
-    expect(releaseFlick({ offset: -1050, spent: true }, COLUMN)).toBe(0);
-  });
-});
-
-describe('releaseFlick with a snap step', () => {
-  // The week view re-anchors on the first day of the week, so landing mid-week
-  // is pulled back: once a page, a gesture must carry a whole one.
-  it('travels a whole page, or none of it', () => {
-    expect(releaseFlick({ offset: -COLUMN * 4, spent: false }, COLUMN, VISIBLE_DAYS)).toBe(VISIBLE_DAYS);
-    expect(releaseFlick({ offset: COLUMN * 5, spent: false }, COLUMN, VISIBLE_DAYS)).toBe(-VISIBLE_DAYS);
-  });
-
-  it('holds still for a gesture that did not carry half a page', () => {
-    expect(releaseFlick({ offset: -COLUMN * 3, spent: false }, COLUMN, VISIBLE_DAYS)).toBe(0);
-    expect(releaseFlick({ offset: -200, spent: false }, COLUMN, VISIBLE_DAYS)).toBe(0);
-  });
-
-  it('still moves day by day where the view does not re-anchor', () => {
-    expect(releaseFlick({ offset: -200, spent: false }, COLUMN, 1)).toBe(1);
+  it('travels a page at the most, whatever the momentum asked for', () => {
+    // This is the June-to-November swipe: sixty momentum events, 18000px
+    const flick = swipe(Array.from({ length: 60 }, () => -300));
+    expect(flickSteps(flick.travelled, COLUMN)).toBeGreaterThan(100);
+    expect(releaseFlick(flick, COLUMN, VISIBLE_DAYS)).toBe(VISIBLE_DAYS);
+    expect(releaseFlick(swipe([PAGE * 9]), COLUMN, VISIBLE_DAYS)).toBe(-VISIBLE_DAYS);
   });
 });
 
-describe('flickDays', () => {
+describe('flickSteps', () => {
   it('reads the grid shift as the days to travel, which run the other way', () => {
-    expect(flickDays(-COLUMN * 3, COLUMN)).toBe(3);
-    expect(flickDays(COLUMN * 2, COLUMN)).toBe(-2);
-    expect(flickDays(-500, 0)).toBe(0);
+    expect(flickSteps(-COLUMN * 3, COLUMN)).toBe(3);
+    expect(flickSteps(COLUMN * 2, COLUMN)).toBe(-2);
+    expect(flickSteps(-500, 0)).toBe(0);
+  });
+});
+
+describe('flickLimit', () => {
+  it('is the columns on screen', () => {
+    expect(flickLimit(COLUMN, VISIBLE_DAYS)).toBe(PAGE);
   });
 });
 

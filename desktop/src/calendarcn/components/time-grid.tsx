@@ -25,7 +25,7 @@ import {
 } from "../lib/time-zones";
 import { getTimeZoneLabel } from "../lib/timezone-label";
 import { expandRecurringEvents } from "../lib/recurrence";
-import { onScreenSlice } from "../lib/scroll-flick";
+import { bufferSteps, onScreenSlice } from "../lib/scroll-flick";
 import { useHorizontalScroll } from "../hooks/use-horizontal-scroll";
 import { useEventKeyboard } from "../hooks/use-event-keyboard";
 import { useEventDrag } from "../hooks/use-event-drag";
@@ -91,12 +91,6 @@ interface ExtraAxisColumn extends TimeZoneAxisColumn {
 
 /** Buffer days per view mode (each side, for horizontal scroll) */
 const BUFFER_DAYS_BY_VIEW: Record<TimeGridView, number> = {
-  day: 1,
-  week: 7,
-};
-
-/** Buffer extension step size per view mode */
-const BUFFER_STEP_BY_VIEW: Record<TimeGridView, number> = {
   day: 1,
   week: 7,
 };
@@ -294,7 +288,6 @@ export function TimeGrid({
       ? WEEKDAYS_PER_WEEK
       : edgeNavigationStep;
   const BUFFER_DAYS = BUFFER_DAYS_BY_VIEW[view];
-  const BUFFER_STEP = BUFFER_STEP_BY_VIEW[view];
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const dayColumnsScrollRef = React.useRef<HTMLDivElement>(null);
   const allDayScrollRef = React.useRef<HTMLDivElement>(null);
@@ -597,12 +590,6 @@ export function TimeGrid({
       containerRef: scrollContainerRef,
       dayColumnWidth,
       visibleDays: VISIBLE_DAYS,
-      // A week view re-anchors on the first day of the week, so a gesture that
-      // stopped mid-week would be pulled back to where it started, or past it
-      snapStep:
-        view === "week" && edgeNavigationStep === DAYS_PER_WEEK
-          ? edgeNavigationDays
-          : 1,
       onNavigate: handleNavigate,
       disabled:
         dragState?.isDragging ||
@@ -633,16 +620,14 @@ export function TimeGrid({
     VISIBLE_DAYS,
   ]);
 
-  // Dynamic buffer: extends in BUFFER_STEP chunks based on scroll distance
-  const extraScrollDays =
-    dayColumnWidth > 0 && BUFFER_STEP > 0
-      ? Math.ceil(Math.abs(scrollOffset) / dayColumnWidth / BUFFER_STEP) *
-        BUFFER_STEP
-      : 0;
-  const dynamicBuffer = BUFFER_DAYS + extraScrollDays;
+  // Columns drawn on each side of the visible ones. A fixed number: no
+  // gesture travels further than a page and a column, so there is nothing
+  // left for a buffer to grow for, and growing it mid-swipe regenerated every
+  // column and every recurring event on the way — a stutter the viewer felt.
+  const dynamicBuffer = Math.max(BUFFER_DAYS, bufferSteps(VISIBLE_DAYS));
   const totalDays = dynamicBuffer + VISIBLE_DAYS + dynamicBuffer;
 
-  // Extended buffered days for scroll (grows dynamically with scroll distance)
+  // The days the grid draws: the visible ones, and the buffer around them
   const bufferedBaseDays = React.useMemo(
     () =>
       generateBufferedDays(

@@ -17,11 +17,6 @@ interface UseHorizontalScrollOptions {
   dayColumnWidth: number;
   /** Day columns on screen: the furthest one gesture travels */
   visibleDays: number;
-  /**
-   * How far the view moves in one step, in columns. A week view that
-   * re-anchors on the first day of the week moves by whole weeks.
-   */
-  snapStep?: number;
   onNavigate: (daysDelta: number) => void;
   disabled?: boolean;
 }
@@ -42,7 +37,6 @@ export function useHorizontalScroll({
   containerRef,
   dayColumnWidth,
   visibleDays,
-  snapStep = 1,
   onNavigate,
   disabled,
 }: UseHorizontalScrollOptions): UseHorizontalScrollReturn {
@@ -157,12 +151,7 @@ export function useHorizontalScroll({
         restTimer.current = null;
         const gesture = flick.current;
         flick.current = restingFlick;
-        // A gesture that already travelled its page has moved the calendar
-        if (gesture.spent) {
-          setIsScrolling(false);
-          return;
-        }
-        snapAndNavigate(releaseFlick(gesture, dayColumnWidth, snapStep));
+        snapAndNavigate(releaseFlick(gesture, dayColumnWidth, visibleDays));
       }, SCROLL_END_DEBOUNCE_MS);
     };
 
@@ -178,20 +167,13 @@ export function useHorizontalScroll({
 
       e.preventDefault();
 
-      // One notch of a mouse wheel: a step of its own, travelled now. Notches
-      // are too small and too far apart to ever add up to a gesture.
+      // One notch of a mouse wheel: a day of its own, travelled now. Notches
+      // come far apart, so a gesture made of them would end between any two.
       if (isDetentWheel(e)) {
         if (restTimer.current) clearTimeout(restTimer.current);
         restTimer.current = null;
         flick.current = restingFlick;
-        snapAndNavigate(Math.sign(delta) * Math.max(1, snapStep));
-        return;
-      }
-
-      // The momentum trailing a gesture that already travelled its page. It is
-      // not a new gesture, and must move nothing: just wait for it to run out.
-      if (flick.current.spent) {
-        waitForQuiet();
+        snapAndNavigate(Math.sign(delta));
         return;
       }
 
@@ -199,18 +181,15 @@ export function useHorizontalScroll({
       if (pendingSnap.current) flushSnap();
       setIsScrolling(true);
 
-      const step = advanceFlick(
+      // The grid follows the fingers, pixel for pixel, with give past a page
+      flick.current = advanceFlick(
         flick.current,
         -delta,
         dayColumnWidth,
         visibleDays,
       );
-      flick.current = step.state;
-      setScrollOffset(step.state.offset);
+      setScrollOffset(flick.current.offset);
       waitForQuiet();
-
-      // A full page: travel now rather than at the end of the momentum
-      if (step.commitDays !== 0) snapAndNavigate(step.commitDays);
     };
 
     container.addEventListener("wheel", handleWheel, { passive: false });
@@ -225,7 +204,6 @@ export function useHorizontalScroll({
     containerRef,
     dayColumnWidth,
     visibleDays,
-    snapStep,
     disabled,
     snapAndNavigate,
     flushSnap,
