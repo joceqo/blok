@@ -1,0 +1,64 @@
+[data-cloud-share-dialog] {
+  box-sizing: border-box; width: min(460px, 100%); max-height: calc(100dvh - 16px);
+  padding: 0; overflow: auto; overscroll-behavior: contain;
+  border: 1px solid var(--desktop-border); border-radius: 11px;
+  background: var(--desktop-strip); color: var(--desktop-ink);
+  box-shadow: 0 8px 28px #0003; font: 13px/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --share-muted: color-mix(in srgb, var(--desktop-muted) 78%, var(--desktop-ink));
+}
+[data-cloud-share-dialog][data-cloud-share-anchored] { position: fixed; inset: auto; margin: 0; z-index: 40; }
+[data-cloud-share-dialog] :is(input,select,button) { font: inherit; }
+[data-cloud-share-dialog] h2 { display: flex; align-items: center; justify-content: space-between; margin: 0; padding: 8px 12px 8px 16px; min-height: 38px; box-sizing: border-box; border-bottom: 1px solid var(--desktop-border); font-size: 14px; font-weight: 600; }
+[data-cloud-share-close] { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 5px; background: transparent; color: var(--share-muted); cursor: pointer; }
+[data-cloud-share-close] svg,[data-cloud-share-dialog] footer svg { display: block; width: 16px; height: 16px; }
+[data-cloud-share-title] { margin: 10px 16px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+[data-cloud-share-sheet] { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; }
+[data-cloud-share-invitation] { margin: 0; }
+[data-cloud-share-person-picker], [data-cloud-share-invite-level], [data-cloud-share-visibility] { display: flex; align-items: center; gap: 8px; }
+[data-cloud-share-person-picker] input {
+  min-width: 0; flex: 1; height: 34px; box-sizing: border-box; border: 1px solid var(--desktop-border);
+  border-radius: 5px; padding: 4px 9px; background: var(--desktop-canvas); color: var(--desktop-ink); font-size: 14px;
+}
+[data-cloud-share-person-picker] input::placeholder { color: var(--share-muted); }
+[data-cloud-share-dialog] :is(button,select,input,summary):focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: 1px; }
+[data-cloud-share-add], [data-cloud-share-apply] { flex: none; min-height: 32px; border: 0; border-radius: 5px; padding: 4px 11px; background: #216ab3; color: white; cursor: pointer; }
+[data-cloud-share-dialog] :is(button,select,input):disabled { opacity: .55; cursor: default; }
+[data-cloud-share-matches] { margin: 5px 0 2px; padding: 4px; border: 1px solid var(--desktop-border); border-radius: 6px; background: var(--desktop-canvas); }
+[data-cloud-share-matches] [role=listbox] { max-height: min(190px,28dvh); overflow: auto; scrollbar-width: thin; }
+[data-cloud-share-matches] [role=option] { display: flex; gap: 8px; align-items: center; min-height: 36px; padding: 4px 6px; cursor: pointer; border-radius: 4px; }
+[data-cloud-share-matches] [role=option][aria-selected=true], [data-cloud-share-close]:hover { background: var(--desktop-hover); }
+[data-cloud-share-matches] [role=option] > span:last-child { min-width: 0; }
+[data-cloud-share-matches] strong, [data-cloud-share-matches] small, [data-cloud-share-identity] :is(span,small) { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-cloud-share-matches] strong, [data-cloud-share-email], [data-cloud-share-visibility] strong { font-weight: 500; }
+[data-cloud-share-matches] small, [data-cloud-share-identity] small, [data-cloud-share-origin], [data-cloud-share-invite-note], [data-cloud-share-empty], [data-cloud-share-visibility] small { font-size: 12px; color: var(--share-muted); }
+[data-cloud-share-matches] p, [data-cloud-share-invite-note], [data-cloud-share-empty] { margin: 4px; }
+[data-cloud-share-invite-level] { justify-content: space-between; padding: 5px 0 0; font-size: 12px; color: var(--share-muted); }
+[data-cloud-share-invite-level] > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+[data-cloud-share-list] { display: flex; flex-direction: column; }
+[data-cloud-share-row] { display: flex; align-items: center; gap: 7px; padding: 5px 0; }
+[data-cloud-share-avatar], [data-cloud-share-visibility-icon] { display: grid; place-items: center; flex: none; width: 29px; height: 29px; border: 1px solid var(--desktop-border); border-radius: 50%; color: var(--share-muted); }
+[data-cloud-share-identity], [data-cloud-share-visibility] > div { flex: 1; min-width: 0; }
+[data-cloud-share-level] { flex: none; color: var(--share-muted); font-size: 12px; }
+[data-cloud-share-select], [data-cloud-share-remove] { min-width: 0; max-width: 100%; padding: 3px; border: 1px solid transparent; border-radius: 4px; color: var(--desktop-ink); background: var(--desktop-strip); cursor: pointer; }
+[data-cloud-share-remove] { color: var(--share-muted); font-size: 11px; }
+[data-cloud-share-select]:hover:not(:disabled), [data-cloud-share-remove]:hover:not(:disabled) { background: var(--desktop-hover); }
+[data-cloud-share-heading] { margin: 2px 0 -5px; color: var(--share-muted); font-size: 12px; font-weight: 550; }
+[data-cloud-share-visibility-icon] { border-radius: 6px; background: var(--desktop-hover); }
+[data-cloud-share-visibility-icon] svg { width: 15px; height: 15px; }
+[data-cloud-share-visibility] small { display: block; }
+[data-cloud-share-rights] { color: var(--share-muted); font-size: 12px; }
+[data-cloud-share-rights] summary { cursor: pointer; width: fit-content; }
+[data-cloud-share-rights] p { margin: 6px 0 0; }
+[data-cloud-share-error] { margin: 0; color: var(--desktop-ink); }
+[data-cloud-share-dialog] footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--desktop-border); padding: 10px 16px; }
+[data-cloud-share-dialog] footer > span { font-size: 11px; color: var(--share-muted); }
+[data-cloud-share-dialog] footer button { display: flex; align-items: center; gap: 5px; flex: none; padding: 5px 8px; border: 1px solid var(--desktop-border); border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+[data-cloud-share-dialog] footer button:hover { background: var(--desktop-hover); }
+@media (max-width: 480px) {
+  [data-cloud-share-sheet] { padding-inline: 12px; }
+  [data-cloud-share-row] { display: grid; grid-template-columns: 30px minmax(0,1fr) auto; gap: 4px 7px; }
+  [data-cloud-share-remove] { grid-column: 3; justify-self: end; }
+}
+@media (pointer: coarse) {
+  [data-cloud-share-dialog] :is(button,select), [data-cloud-share-person-picker] input, [data-cloud-share-matches] [role=option] { min-height: 44px; }
+}

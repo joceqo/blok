@@ -1,3 +1,6 @@
+export const IconBuilding = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 17V3h9.5v14zm9.5-10h5.5v10H12M6 17v-4h2.5v4"/><path stroke-linecap="round" d="M5.8 6h.2m2.5 0h.2M5.8 9.2h.2m2.5 0h.2m5.8 1.1h.2m-.2 3h.2"/></svg>`;
+export const IconBell = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.4 14.7c0-1.2 2-2.2 2-6.2 0-2.9 1.8-5 4.6-5s4.6 2.1 4.6 5c0 4 2 5 2 6.2H3.4zM8.4 17c.8 1.1 2.4 1.1 3.2 0"/></svg>`;
+
 // Check/Confirm icon
 export const IconCheck = `
 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
@@ -36,7 +39,8 @@ export const IconItalic = `
 // Link icon
 export const IconLink = `
 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
-  <path d="M8.75 6.25 9.5 5.5a3.18 3.18 0 0 1 4.5 4.5l-.75.75M6.75 9.25 6 10a3.18 3.18 0 0 0 4.5 4.5l.75-.75M8 12l4-4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8.25 10.75a4 4 0 0 0 6.25 .5l2.5-2.5a4 4 0 0 0-5.75-5.75l-1.5 1.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M11.75 9.25a4 4 0 0 0-6.25-.5l-2.5 2.5a4 4 0 0 0 5.75 5.75l1.5-1.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 `;
 
@@ -595,6 +599,9 @@ export const IconGlobe = `
 `;
 
 // Bookmark icon (ribbon — link bookmark card)
+export const libraryIconPath = 'M2 2.6h2.7v10.8H2zM6.2 2.6h2.7v10.8H6.2zM10.1 3.1l2.4-.7 2.6 10.4-2.4.6z';
+export const IconLibrary = `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="${libraryIconPath}"/></svg>`;
+
 export const IconBookmark = `
 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
   <path d="M7 3h6a2 2 0 0 1 2 2v12l-5-3.5L5 17V5a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
@@ -602,6 +609,19 @@ export const IconBookmark = `
 `;
 
 // Mail icon (email link type)
+export const inboxIconPath = 'm2.25 10.5 2.5-6a1.5 1.5 0 0 1 1.4-.9h7.7a1.5 1.5 0 0 1 1.4.9l2.5 6v4a1.8 1.8 0 0 1-1.8 1.8H4.05a1.8 1.8 0 0 1-1.8-1.8v-4Zm0 0h5l1.1 2.2h3.3l1.1-2.2h5';
+export const IconInbox = `
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <path d="${inboxIconPath}" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+</svg>
+`;
+
+export const IconRefresh = `
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <path d="M16.1 8a6.3 6.3 0 1 0 .1 3.8M16.3 3.9V8h-4.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+`;
+
 export const IconMail = `
 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
   <rect x="3" y="4.5" width="14" height="11" rx="2.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
@@ -777,6 +797,27 @@ export const IconAskAiExplain = `
   <path d="M5.5 3.5h9A2.5 2.5 0 0 1 17 6v6.5a2.5 2.5 0 0 1-2.5 2.5H10.5l-3 2v-2h-2A2.5 2.5 0 0 1 3 12.5V6a2.5 2.5 0 0 1 2.5-2.5Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M8.5 7.25a1.5 1.5 0 1 1 2.25 1.3c-.45.27-.75.6-.75 1.1" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
   <circle cx="10" cy="12.4" r="1" fill="currentColor"/>
+</svg>
+`;
+
+/** Diagram: one node branching into two, the drawing a rendered diagram makes. */
+export const IconAskAiDiagram = `
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <path d="M8.5 3h3a1 1 0 0 1 1 1v1.5a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M4 13.5h3a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-1.5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M13 13.5h3a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-1.5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10 6.5V10" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M5.5 13.5V10h9v3.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+`;
+
+/** ASCII diagram: the same drawing typed out, two square cells and an arrow inside a block. */
+export const IconAskAiAsciiDiagram = `
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <path d="M5.5 4.5h9A2.5 2.5 0 0 1 17 7v6a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 3 13V7a2.5 2.5 0 0 1 2.5-2.5Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M5.5 8.75h2.5v2.5H5.5Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M12 8.75h2.5v2.5H12Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 10h4m-1.25-1.25L12 10l-1.25 1.25" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 `;
 

@@ -1,0 +1,73 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { PgPool } from '../db/pool.ts';
+import { createShellApp } from './app.ts';
+
+const secret = 's'.repeat(32);
+const origins = new Set(['https://example.test', 'tauri://localhost']);
+
+describe('shell API admission', () => {
+  const unused = {} as PgPool;
+  const app = createShellApp(unused, secret, origins);
+
+  it('refuses a document callback before reading the request body', async () => {
+    const res = await app.request('/internal/documents/p', { method: 'PUT', body: 'invalid' });
+    expect(res.status).toBe(401);
+  });
+
+  it('requires a shell session before looking up a page', async () => {
+    expect((await app.request('/api/workspaces/demo/pages/p')).status).toBe(401);
+    expect((await app.request('/api/session')).status).toBe(401);
+    expect((await app.request('/api/workspaces/demo/members')).status).toBe(401);
+    expect((await app.request('/api/workspaces/demo/members/target', { method: 'DELETE' })).status).toBe(401);
+  });
+
+  it('requires an account session on every MCP token-management route', async () => {
+    for (const [method,path] of [['GET',''],['POST',''],['POST','/key/rotate'],['DELETE','/key']] as const) {
+      const response = await app.request('/api/mcp/tokens'+path, {method});
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({error:'Sign in required'});
+    }
+  });
+
+  it('separates native and foreign origins', async () => {
+    const res = await app.request('/api/session', { method: 'OPTIONS', headers: { Origin: 'tauri://localhost' } });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')?.split(', ')).toEqual(expect.arrayContaining(['PUT', 'DELETE']));
+    expect(res.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
+    expect((await app.request('/api/session', { headers: { Origin: 'https://other.test' } })).status).toBe(403);
+  });
+
+  it('rejects a cross-site write with no Origin before routing', async () => {
+    const res = await app.request('/api/workspaces/demo/index', { method: 'PUT', headers: { 'Sec-Fetch-Site': 'cross-site' } });
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses malformed/oversized documents and inconsistent journal headers', async () => {
+    const headers = new Headers({ Authorization: 'Bearer ' + secret });
+    const put = (body: string) => app.request('/internal/documents/p', { method: 'PUT', headers, body });
+    expect((await put('{')).status).toBe(400);
+    headers.set('Blok-Doc-Lineage', 'lineage');
+    expect((await put('{}')).status).toBe(400);
+    headers.set('Content-Length', '67108865');
+    expect((await put('{}')).status).toBe(413);
+  });
+
+  it('rejects a legacy writer for the page assigned to a Node room', async () => {
+    vi.stubEnv('BLOK_NODE_ROOM_PAGE', 'selected');
+    try {
+      const api = createShellApp(unused, secret, origins);
+      const response = await api.request('/internal/documents/selected', {method:'PUT',headers:{ Authorization:'Bearer '+secret },body:'{}'});
+      expect(response.status).toBe(409);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('returns stored numeric JSON lexemes unchanged to the collaboration engine', async () => {
+    const db = { query: vi.fn().mockResolvedValue({ rows: [{ content: '{"id":9007199254740993}', version: '1', lineage: null, sequence: null }] }) };
+    const withPage = createShellApp(db as unknown as PgPool, secret, origins);
+    const res = await withPage.request('/internal/documents/p', { headers: { Authorization: 'Bearer ' + secret } });
+    expect(await res.text()).toBe('{"data":{"id":9007199254740993},"version":"1","lineage":null,"sequence":null}');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+});

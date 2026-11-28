@@ -1,0 +1,39 @@
+<svg width="55" height="36" viewBox="0 0 55 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g filter="url(#filter0_d_744_3647)">
+  <rect width="46.1176" height="27.128" rx="3" transform="matrix(1 0 0 -1 4.5293 31.2461)" fill="#1B1B1B"/>
+  <rect x="0.5" y="-0.5" width="45.1176" height="26.128" rx="2.5" transform="matrix(1 0 0 -1 4.5293 30.2461)" stroke="#727272"/>
+  <line y1="-0.109324" x2="3.25536" y2="-0.109324" transform="matrix(1 0 0 -1 13.21 13.8838)" stroke="#6B6B6B" stroke-width="0.218649"/>
+  <line y1="-0.109324" x2="3.25536" y2="-0.109324" transform="matrix(1 0 0 -1 13.21 13.8838)" stroke="#6B6B6B" stroke-width="0.218649"/>
+  <path d="M22.4336 14.4268H24.1332V18.8259V20.9374L26.2315 20.9375" stroke="#6B6B6B" stroke-width="0.218649"/>
+  <path d="M32.7422 20.9373H39.3551V24.1926V25.8203L41.4232 25.8203" stroke="#6B6B6B" stroke-width="0.218649"/>
+  <path d="M20.2637 14.427H23.9576L23.9579 11.2328V9.54401L26.2318 9.54395" stroke="#6B6B6B" stroke-width="0.218649"/>
+  <path d="M38.168 20.9377H39.6247V17.6824V16.0547L41.4233 16.0547" stroke="#6B6B6B" stroke-width="0.218649"/>
+  <rect width="6.51073" height="3.79792" rx="0.728829" transform="matrix(1 0 0 -1 26.2314 11.7139)" fill="#9DD194"/>
+  <rect x="0.0364415" y="-0.0364415" width="6.43784" height="3.72504" rx="0.692388" transform="matrix(1 0 0 -1 26.2314 11.641)" stroke="white" stroke-opacity="0.1" stroke-width="0.0728829"/>
+  <rect width="7.05329" height="3.25536" rx="0.728829" transform="matrix(1 0 0 -1 6.15723 16.0547)" fill="#FFD338"/>
+  <rect x="0.0364415" y="-0.0364415" width="6.9804" height="3.18248" rx="0.692388" transform="matrix(1 0 0 -1 6.15723 15.9818)" stroke="white" stroke-opacity="0.1" stroke-width="0.0728829"/>
+  <rect width="3.37861" height="3.37861" transform="matrix(0.707107 0.707107 0.707107 -0.707107 34.2441 20.8691)" fill="#937EE7"/>
+  <rect x="0.051536" width="3.30572" height="3.30572" transform="matrix(0.707107 0.707107 0.707107 -0.707107 34.2592 20.8327)" stroke="white" stroke-opacity="0.1" stroke-width="0.0728829"/>
+  <rect width="3.37861" height="3.37861" transform="matrix(0.707107 0.707107 0.707107 -0.707107 16.1426 14.4902)" fill="#937EE7"/>
+  <rect x="0.051536" width="3.30572" height="3.30572" transform="matrix(0.707107 0.707107 0.707107 -0.707107 16.1577 14.4538)" stroke="white" stroke-opacity="0.1" stroke-width="0.0728829"/>
+  <rect width="6.51073" height="3.79792" rx="0.728829" transform="matrix(1 0 0 -1 26.2314 22.5654)" fill="#FFD338"/>
+  <rect x="0.0364415" y="-0.0364415" width="6.43784" height="3.72504" rx="0.692388" transform="matrix(1 0 0 -1 26.2314 22.4925)" stroke="white" stroke-opacity="0.1" stroke-width="0.0728829"/>
+  <rect width="7.05329" height="3.25536" rx="0.728829" transform="matrix(1 0 0 -1 41.4238 26.9053)" fill="#937EE7"/>
+  <rect x="0.0364415" y="-0.0364415" width="6.9804" height="3.18248" rx="0.692388" transform="matrix(1 0 0 -1 41.4238 26.8324)" stroke="white" stroke-opacity="0.1" stroke-width="0.0728829"/>
+  <rect width="7.05329" height="3.79792" rx="0.728829" transform="matrix(1 0 0 -1 41.4238 18.2246)" fill="#937EE7"/>
+  <rect x="0.0364415" y="-0.0364415" width="6.9804" height="3.72504" rx="0.692388" transform="matrix(1 0 0 -1 41.4238 18.1517)" stroke="white" stroke-opacity="0.1" stroke-width="0.0728829"/>
+  </g>
+  <defs>
+  <filter id="filter0_d_744_3647" x="0.529297" y="0.118164" width="54.1172" height="35.1279" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+  <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+  <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+  <feOffset/>
+  <feGaussianBlur stdDeviation="2"/>
+  <feComposite in2="hardAlpha" operator="out"/>
+  <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.6 0"/>
+  <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_744_3647"/>
+  <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_744_3647" result="shape"/>
+  </filter>
+  </defs>
+  </svg>
+  

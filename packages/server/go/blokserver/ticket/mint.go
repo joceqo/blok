@@ -79,3 +79,12 @@ func sign(secret, input string) []byte {
 	mac.Write([]byte(input))
 	return mac.Sum(nil)
 }
+
+// VerifiedClaims are the fields authenticated by a ticket-mode server.
+type VerifiedClaims = ticket.Claims
+
+// Verify authenticates the exact signed format used by the collaboration
+// handshake, including its expiry. Callers must still check document scope.
+func Verify(secret, token string, now time.Time) (VerifiedClaims, bool) {
+	return ticket.Verify(secret, token, now)
+}

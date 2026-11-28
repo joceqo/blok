@@ -1,0 +1,123 @@
+.teamspace-settings, .teamspace-dialog {
+  --team-line: color-mix(in srgb, var(--desktop-ink) 12%, var(--desktop-canvas));
+  --team-blue: #2383e2;
+  color: var(--desktop-ink); font: inherit; font-size: 14px; line-height: 1.45;
+}
+.teamspace-settings :is(h1,h2,h3,p), .teamspace-dialog :is(h2,h3,p) { margin: 0; }
+.teamspace-settings [data-desktop-settings-title] { margin-bottom: 8px; }
+.teamspace-settings [data-desktop-settings-intro] { margin-bottom: 38px; color: var(--desktop-ink); }
+.teamspace-settings h2, .teamspace-detail-section h3 { font-size: 14px; font-weight: 550; line-height: 20px; }
+.teamspace-settings :is(.teamspace-policy,.teamspace-directory) p, .teamspace-dialog p, .teamspace-settings small, .teamspace-dialog small { color: var(--desktop-muted); }
+.teamspace-policy { padding: 16px 0; border-bottom: 1px solid var(--team-line); }
+.teamspace-policy p, .teamspace-directory > p, .teamspace-detail-section > p { margin-top: 4px; }
+.teamspace-directory { padding-top: 25px; }
+.teamspace-settings :is(button,select), .teamspace-dialog :is(button,select) { font: inherit; cursor: pointer; }
+.teamspace-settings button:disabled, .teamspace-dialog button:disabled { opacity: .45; cursor: default; }
+.teamspace-settings :is(button,select,input):focus-visible, .teamspace-dialog :is(button,select,input,textarea):focus-visible {
+  outline: 2px solid var(--desktop-focus-ring); outline-offset: 2px;
+}
+.teamspace-setting-row, .teamspace-roster-toolbar, .teamspace-default-form, .teamspace-invite-input,
+.teamspace-detail-sub, .teamspace-name-field, .teamspace-page-form, .teamspace-person {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.teamspace-setting-row, .teamspace-detail-sub { justify-content: space-between; gap: 18px; }
+.teamspace-setting-row .settings-panel-switch { flex: none; }
+.teamspace-settings .teamspace-primary, .teamspace-dialog .teamspace-primary, .teamspace-outline, .teamspace-danger {
+  border: 1px solid transparent; border-radius: 5px; padding: 4px 9px; font-size: 14px; line-height: 20px; font-weight: 500;
+}
+.teamspace-primary { background: var(--team-blue); color: white; }
+.teamspace-primary:hover:enabled { background: #1874ce; }
+.teamspace-outline, .teamspace-danger { background: transparent; color: inherit; border-color: var(--team-line); }
+.teamspace-danger { color: var(--blok-color-red, #d65955); }
+.teamspace-outline:hover:enabled, .teamspace-danger:hover:enabled, .teamspace-filter:hover, .teamspace-icon-button:hover, .teamspace-more:hover { background: var(--desktop-hover); }
+.teamspace-default-form { margin-top: 10px; }
+.teamspace-default-field { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 36px; padding: 4px; border: 1px solid var(--team-line); border-radius: 4px; background: var(--desktop-strip); }
+.teamspace-default-field button { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; border: 0; border-radius: 4px; padding: 2px 6px; background: var(--desktop-hover); color: inherit; }
+.teamspace-default-field button > svg { width: 14px; height: 14px; }
+.teamspace-default-field select, .teamspace-invite-input select, .teamspace-roster select { max-width: 100%; border: 0; background: transparent; color: var(--desktop-muted); }
+.teamspace-default-form > button { min-height: 36px; }
+.teamspace-toolbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 14px 0 10px; }
+.teamspace-toolbar-spacer { flex: 1; }
+.teamspace-filter, .teamspace-icon-button, .teamspace-more { display: inline-flex; gap: 5px; align-items: center; justify-content: center; border: 0; border-radius: 5px; background: transparent; color: var(--desktop-muted); padding: 3px 7px; height: 28px; line-height: 20px; }
+.teamspace-filter { position: relative; }
+.teamspace-filter:focus-within { outline: 2px solid var(--desktop-focus-ring); }
+.teamspace-filter[data-active=true] { background: color-mix(in srgb, var(--team-blue) 15%, transparent); color: #2383e2; }
+.teamspace-filter select { position: absolute; inset: 0; width: 100%; opacity: 0; }
+.teamspace-filter > span { display: inline-flex; align-items: center; }
+.teamspace-filter svg, .teamspace-icon-button svg { width: 16px; height: 16px; }
+.teamspace-filter span:nth-child(3) svg { width: 12px; height: 12px; }
+.teamspace-scroll-table { overflow-x: auto; }
+.teamspace-table, .teamspace-roster { width: 100%; border-collapse: collapse; text-align: start; border-top: 1px solid var(--team-line); font-size: 14px; }
+.teamspace-table th, .teamspace-roster th { text-align: start; color: var(--desktop-muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.teamspace-table :is(td,th), .teamspace-roster :is(td,th) { padding: 8px 5px; border-bottom: 1px solid var(--team-line); }
+.teamspace-table td { height: 56px; }
+.teamspace-table td:first-child { width: 35%; min-width: 130px; }
+.teamspace-table th:nth-child(2) { width: 25%; }
+.teamspace-table th:nth-child(3) { width: 18%; }
+.teamspace-table th button, .teamspace-row-button, .teamspace-link-button { border: 0; background: transparent; color: inherit; text-align: start; padding: 0; }
+.teamspace-table tr:has(.teamspace-row-button) { cursor: pointer; }
+.teamspace-table tr:has(.teamspace-row-button):hover { background: color-mix(in srgb, var(--desktop-ink) 4%, transparent); }
+.teamspace-row-button { display: inline-flex; align-items: center; gap: 12px; overflow-wrap: anywhere; }
+.teamspace-row-button small, .teamspace-person small:not(.teamspace-pill) { display: block; font-size: 12px; font-weight: 400; }
+.teamspace-row-icon, .teamspace-title-icon, .teamspace-detail-logo { display: inline-grid; place-items: center; flex-shrink: 0; background: var(--desktop-hover); border-radius: 4px; }
+.teamspace-row-icon { width: 28px; height: 28px; font-size: 19px; }
+.teamspace-avatar { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; font-size: 11px; line-height: 1; color: var(--desktop-muted); border-radius: 50%; box-shadow: inset 0 0 0 1px var(--team-line); background: var(--desktop-strip); }
+.teamspace-table .teamspace-empty, .teamspace-roster .teamspace-empty { text-align: center; color: var(--desktop-muted); }
+.teamspace-more { font-size: 12px; }
+.teamspace-error { color: var(--blok-color-red, #dc6760) !important; margin: 12px 0 !important; }
+.teamspace-error button { color: inherit; border: 0; background: none; text-decoration: underline; }
+.teamspace-dialog { width: min(480px, 100%); position: relative; max-height: calc(100dvh - 40px); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--desktop-strip); border-radius: 12px; box-shadow: 0 0 0 1px var(--team-line), 0 16px 56px #0006; padding: 24px 20px 20px; }
+.teamspace-dialog:focus { outline: none; }
+.teamspace-dialog h2 { font-size: 18px; font-weight: 600; line-height: 24px; }
+.teamspace-close { display: grid; place-items: center; position: absolute; top: 11px; right: 11px; width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 0; background: var(--desktop-hover); color: var(--desktop-muted); }
+.teamspace-close svg { width: 14px; height: 14px; }
+.teamspace-form-header { text-align: center; }
+.teamspace-emblem { display: inline-flex; align-items: center; font-size: 26px; color: var(--desktop-muted); margin-bottom: 10px; }
+.teamspace-form-header p { max-width: 300px; margin: 8px auto 24px; }
+.teamspace-callout { padding: 14px 16px; margin-bottom: 14px; border-radius: 7px; background: var(--desktop-hover); }
+.teamspace-dialog label:not(.teamspace-filter) { display: block; margin: 14px 0 4px; font-size: 12px; font-weight: 550; color: var(--desktop-muted); }
+.teamspace-dialog :is(input:not([type=file]), textarea), .teamspace-settings .teamspace-search, .teamspace-page-form select {
+  width: 100%; min-width: 0; background: var(--desktop-hover); color: inherit; border: 1px solid var(--team-line); border-radius: 5px; padding: 7px 10px; font: inherit;
+}
+.teamspace-settings .teamspace-search { margin-bottom: 10px; }
+.teamspace-dialog textarea { resize: vertical; min-height: 82px; }
+.teamspace-name-field { font-size: 22px; }
+.teamspace-name-field > input { font-size: 14px !important; }
+.teamspace-dialog footer { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 20px; }
+.teamspace-dialog-invite { width: min(500px, 100%); padding: 24px; }
+.teamspace-dialog-invite h2 { padding-inline-end: 12px; font-size: 16px; margin-bottom: 14px; }
+.teamspace-title-icon { display: inline-flex; font-size: .9em; padding: 3px; vertical-align: -2px; }
+.teamspace-invite-input { border: 1px solid var(--team-line); background: var(--desktop-hover); border-radius: 5px; padding-right: 6px; }
+.teamspace-invite-input:focus-within { outline: 2px solid var(--desktop-focus-ring); }
+.teamspace-invite-input input { background: none !important; border: 0 !important; outline: 0 !important; }
+.teamspace-candidates { max-height: 190px; overflow: auto; margin-top: 10px; }
+.teamspace-candidates > button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: start; background: transparent; border: 0; color: inherit; border-radius: 5px; padding: 6px; }
+.teamspace-candidates > button:hover { background: var(--desktop-hover); }
+.teamspace-candidates small { display: block; }
+.teamspace-dialog-detail { width: min(630px, 100%); min-height: min(550px, calc(100dvh - 40px)); padding: 32px; }
+.teamspace-detail-logo { width: 64px; height: 64px; font-size: 38px; }
+.teamspace-detail-logo > button { width: 100%; height: 100%; }
+.teamspace-dialog-detail h2 { margin: 20px 0 5px; font-size: 26px; line-height: 32px; overflow-wrap: anywhere; }
+.teamspace-edit { margin-inline-start: 8px; color: var(--desktop-muted); border: 0; background: none; }
+.teamspace-detail-sub { color: var(--desktop-muted); }
+.teamspace-pill { background: var(--desktop-hover); border-radius: 12px; padding: 2px 7px; font-size: 12px; }
+.teamspace-person .teamspace-pill { margin-left: 4px; }
+.teamspace-tabs { display: flex; align-items: center; gap: 4px; margin: 32px 0 18px; }
+.teamspace-tabs button { border: 0; border-radius: 20px; color: var(--desktop-muted); background: transparent; padding: 4px 10px; }
+.teamspace-tabs [aria-selected=true] { color: var(--desktop-ink); background: var(--desktop-hover); }
+.teamspace-roster-toolbar { margin-bottom: 18px; }
+.teamspace-roster-toolbar button { white-space: nowrap; }
+.teamspace-roster td:last-child, .teamspace-roster th:last-child { text-align: end; }
+.teamspace-roster .teamspace-avatar { width: 30px; height: 30px; }
+.teamspace-person > span:last-child { overflow-wrap: anywhere; }
+.teamspace-detail-section > :is(.teamspace-setting-row,button,form,.teamspace-delete-confirm) { margin-top: 10px; }
+.teamspace-detail-section > p + h3, .teamspace-description + .teamspace-detail-section { margin-top: 18px; }
+.teamspace-delete-confirm { padding: 10px; border: 1px solid var(--team-line); border-radius: 5px; }
+.teamspace-delete-confirm p { margin: 6px 0; }
+@media (max-width: 650px) {
+  .teamspace-toolbar-spacer { flex-basis: 0; }
+  .teamspace-dialog { padding: 20px 16px; }
+  .teamspace-table { min-width: 470px; }
+  .teamspace-page-form { flex-wrap: wrap; }
+}

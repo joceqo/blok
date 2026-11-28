@@ -5,7 +5,7 @@ Thumbs.db
 /*.sublime-project
 /*.sublime-workspace
 
-node_modules/*
+/node_modules
 docs/node_modules/*
 # yarn links a workspace's `bin` into its own node_modules; the rules above are
 # anchored to the repo root and do not reach it.
@@ -109,6 +109,17 @@ override-extension/payload/
 !packages/server/rust/**/Cargo.toml
 !packages/server/rust/rust-toolchain.toml
 !packages/server/rust/.config/nextest.toml
+# The desktop shell's manifests
+!desktop/**/*.toml
+
+# Desktop shell build output
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/bundled-runtime/
+desktop/src-tauri/.runtime-build-*/
+desktop/src-tauri/gen/
+!desktop/.npmrc
 
 # Stryker's sandboxes: one full copy of the repo per concurrent runner, left
 # behind when a run is killed rather than finishing.
@@ -130,3 +141,6 @@ research_notes/
 
 # Local reports
 reports/
+
+# Collaboration journals written by test runs
+blok-collab/

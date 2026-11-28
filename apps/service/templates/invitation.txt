@@ -1,0 +1,17 @@
+VOUS ÊTES INVITÉ À REJOINDRE {{WORKSPACE}}
+
+Connectez-vous avec cette adresse e-mail pour accepter l’invitation. Elle expire dans sept jours.
+
+Accepter l’invitation {{publicURL}}
+
+{{#message}}
+
+Message de l’administrateur
+
+{{message}}
+
+{{/message}}
+
+----------------------------------------
+
+{{publicURL}}

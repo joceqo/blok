@@ -1,0 +1,44 @@
+.shell-suggestion-card {
+  display: flex;
+  align-items: flex-start;
+  border: 1px solid var(--blok-popover-border, var(--desktop-border));
+  border-radius: 9px;
+  color: var(--blok-sidebar-label, var(--desktop-ink));
+}
+.shell-suggestion-action {
+  display: flex;
+  align-items: flex-start;
+  flex: 1;
+  min-width: 0;
+  gap: 9px;
+  padding: 11px 0 11px 12px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
+}
+.shell-suggestion-action strong,
+.shell-suggestion-action small { display: block; font-size: 12px; line-height: 17px; }
+.shell-suggestion-action strong { color: var(--blok-sidebar-selected, var(--desktop-ink)); font-weight: 600; }
+.shell-suggestion-action small { margin-top: 2px; }
+.shell-suggestion-icon { display: flex; color: var(--blok-sidebar-selected, var(--desktop-ink)); }
+.shell-suggestion-card:has(.shell-suggestion-action:hover) { background: var(--blok-item-hover-bg, var(--desktop-hover)); }
+.shell-dismiss-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--blok-sidebar-label, var(--desktop-muted));
+  cursor: pointer;
+}
+.shell-suggestion-card > .shell-dismiss-button { margin: 8px 7px 0 2px; }
+.shell-dismiss-button:is(:hover,:focus-visible) { background: var(--blok-item-hover-bg, var(--desktop-hover)); }
+.shell-suggestion-action:focus-visible, .shell-dismiss-button:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }

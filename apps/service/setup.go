@@ -1,0 +1,450 @@
+package cloud
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// bootstrapInstance applies §5.1 after the schema (and optional bootstrap
+// workspace) exist. AdminEmail never touches memberships. Returns whether the
+// instance is still waiting for its first-run setup, so the caller can say so
+// in the start-up log.
+func (s *Service) bootstrapInstance(ctx context.Context, tx pgx.Tx) (setupRequired bool, err error) {
+	if _, err = tx.Exec(ctx, `
+		UPDATE instance_settings SET default_workspace_id=(SELECT id FROM workspaces)
+		 WHERE default_workspace_id IS NULL AND (SELECT count(*) FROM workspaces)=1`); err != nil {
+		return false, err
+	}
+	if s.Config.AdminEmail != "" {
+		email := s.Config.AdminEmail
+		if _, err = normalizeEmail(email); err != nil {
+			return false, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO users(id,email) VALUES($1,$2) ON CONFLICT(email) DO NOTHING`, opaque(), email); err != nil {
+			return false, err
+		}
+		// Only when the instance has nobody left. ON CONFLICT cannot protect a
+		// revocation here the way it protects a demoted membership: revoking
+		// DELETEs the row, so there is nothing to conflict with and the address
+		// would be reinstated on every restart. The variable exists so an
+		// instance is never left without an administrator — not so the .env can
+		// quietly undo a deliberate removal. Use `blokctl admin grant` to add one.
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO instance_admins(user_id)
+			SELECT id FROM users WHERE email=$1
+			  AND NOT EXISTS(SELECT 1 FROM instance_admins)
+			ON CONFLICT DO NOTHING`, email); err != nil {
+			return false, err
+		}
+		// Workspace couple (§5.3): seed admin membership without rewriting an
+		// existing role — demotion must survive New() (§5.1).
+		if s.Config.BootstrapWorkspaceSlug != "" {
+			if _, err = tx.Exec(ctx, `
+				INSERT INTO memberships(workspace_id,user_id,role)
+				SELECT w.id, u.id, 'admin'
+				  FROM workspaces w, users u
+				 WHERE w.slug=$1 AND u.email=$2
+				ON CONFLICT DO NOTHING`, s.Config.BootstrapWorkspaceSlug, email); err != nil {
+				return false, err
+			}
+		}
+		if _, err = tx.Exec(ctx, `
+			UPDATE instance_settings SET setup_completed_at=coalesce(setup_completed_at, now()) WHERE id`); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	var adminCount int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM instance_admins`).Scan(&adminCount); err != nil {
+		return false, err
+	}
+	if adminCount > 0 {
+		return false, nil
+	}
+
+	var setupCompleted pgtype.Timestamptz
+	var hasMembers bool
+	if err = tx.QueryRow(ctx, `
+		SELECT setup_completed_at, EXISTS(SELECT 1 FROM memberships)
+		  FROM instance_settings WHERE id`).Scan(&setupCompleted, &hasMembers); err != nil {
+		return false, err
+	}
+	inherited := setupCompleted.Valid || hasMembers
+	if !inherited {
+		return true, nil
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT u.id, u.email FROM memberships m
+		  JOIN users u ON u.id=m.user_id
+		  JOIN instance_settings s ON s.default_workspace_id=m.workspace_id
+		 WHERE m.role='admin'`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	type heir struct{ id, email string }
+	var heirs []heir
+	for rows.Next() {
+		var h heir
+		if err = rows.Scan(&h.id, &h.email); err != nil {
+			return false, err
+		}
+		heirs = append(heirs, h)
+	}
+	if err = rows.Err(); err != nil {
+		return false, err
+	}
+	for _, h := range heirs {
+		if _, err = tx.Exec(ctx, `INSERT INTO instance_admins(user_id) VALUES($1) ON CONFLICT DO NOTHING`, h.id); err != nil {
+			return false, err
+		}
+		slog.Info("promoted inherited workspace admin to instance admin", "email", h.email)
+	}
+	if _, err = tx.Exec(ctx, `
+		UPDATE instance_settings SET setup_completed_at=coalesce(setup_completed_at, now()) WHERE id`); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// EmailTest sends a delivery probe and returns the mail backend name.
+func (s *Service) EmailTest(ctx context.Context, email string) (string, error) {
+	_ = ctx
+	email, e := normalizeEmail(email)
+	if e != nil {
+		return "", e
+	}
+	backend := s.Config.mailBackend()
+	if e = s.sendDeliveryTest(email); e != nil {
+		return backend, e
+	}
+	return backend, nil
+}
+
+// firstWorkspaceName and firstWorkspaceSlug derive the space the assistant
+// creates, from the administrator's address. Nobody has anything to name at
+// setup time; Notion derives it the same way and lets you rename afterwards.
+func firstWorkspaceName(email string) string {
+	local := email
+	if at := strings.LastIndex(email, "@"); at > 0 {
+		local = email[:at]
+	}
+	return "Espace de " + local
+}
+
+func firstWorkspaceSlug(email string) string {
+	local := email
+	if at := strings.LastIndex(email, "@"); at > 0 {
+		local = email[:at]
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(local) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	if slug == "" {
+		return "espace"
+	}
+	// slugPattern wants at least two characters and a leading alphanumeric.
+	if len(slug) < 2 {
+		return slug + "-espace"
+	}
+	if len(slug) > 63 {
+		slug = strings.Trim(slug[:63], "-")
+	}
+	return slug
+}
+
+func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email             string `json:"email"`
+		Name              string `json:"name"`
+		InstanceName      string `json:"instanceName"`
+		SignupPolicy      string `json:"signupPolicy"`
+		WorkspaceCreation string `json:"workspaceCreation"`
+		Workspace         *struct {
+			Slug string `json:"slug"`
+			Name string `json:"name"`
+		} `json:"workspace"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	email, e := normalizeEmail(in.Email)
+	if e != nil {
+		problem(w, 400, "Invalid email")
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" || utf8.RuneCountInString(name) > 120 {
+		problem(w, 400, "Invalid name")
+		return
+	}
+	instanceName := strings.TrimSpace(in.InstanceName)
+	if instanceName != "" && (utf8.RuneCountInString(instanceName) < 1 || utf8.RuneCountInString(instanceName) > 120) {
+		problem(w, 400, "Invalid instanceName")
+		return
+	}
+	signupPolicy := in.SignupPolicy
+	if signupPolicy == "" {
+		signupPolicy = "invite"
+	}
+	switch signupPolicy {
+	case "invite", "domain", "open":
+	default:
+		problem(w, 400, "Invalid signupPolicy")
+		return
+	}
+	workspaceCreation := in.WorkspaceCreation
+	if workspaceCreation == "" {
+		workspaceCreation = "admins_only"
+	}
+	switch workspaceCreation {
+	case "anyone", "admins_only", "disabled":
+	default:
+		problem(w, 400, "Invalid workspaceCreation")
+		return
+	}
+	if in.Workspace != nil {
+		if !slugPattern.MatchString(in.Workspace.Slug) || len(strings.TrimSpace(in.Workspace.Name)) < 1 || utf8.RuneCountInString(in.Workspace.Name) > 120 {
+			problem(w, 400, "Invalid workspace")
+			return
+		}
+	}
+	ip := s.clientIP(r)
+	if !s.rate(r.Context(), "setup-claim:"+ip, 20) {
+		problem(w, 429, "Too many attempts; try again later")
+		return
+	}
+
+	tx, e := s.DB.Begin(r.Context())
+	if e != nil {
+		failed(w, 503, "Database unavailable", e)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var completed pgtype.Timestamptz
+	e = tx.QueryRow(r.Context(), `SELECT setup_completed_at FROM instance_settings WHERE id FOR UPDATE`).Scan(&completed)
+	if e != nil {
+		failed(w, 500, "Setup unavailable", e)
+		return
+	}
+	if completed.Valid {
+		problem(w, 409, "Setup already completed")
+		return
+	}
+	userID := opaque()
+	e = tx.QueryRow(r.Context(), `
+		INSERT INTO users(id,email,name) VALUES($1,$2,$3)
+		ON CONFLICT(email) DO UPDATE SET name=EXCLUDED.name
+		RETURNING id`, userID, email, name).Scan(&userID)
+	if e != nil {
+		failed(w, 500, "Could not create administrator", e)
+		return
+	}
+	if _, e = tx.Exec(r.Context(), `INSERT INTO instance_admins(user_id) VALUES($1) ON CONFLICT DO NOTHING`, userID); e != nil {
+		failed(w, 500, "Could not create administrator", e)
+		return
+	}
+
+	var workspaceID *string
+	// The claim always leaves exactly one space, so an instance can never land
+	// on an empty selector — and `workspace_creation=disabled` can never brick
+	// a fresh install.
+	wsSlug, wsName := firstWorkspaceSlug(email), firstWorkspaceName(email)
+	if in.Workspace != nil {
+		wsSlug, wsName = in.Workspace.Slug, strings.TrimSpace(in.Workspace.Name)
+	}
+	{
+		id := opaque()
+		if _, e = tx.Exec(r.Context(), `INSERT INTO workspaces(id,slug,name) VALUES($1,$2,$3)`, id, wsSlug, wsName); e != nil {
+			problem(w, 409, "Slug already used")
+			return
+		}
+		if _, e = tx.Exec(r.Context(), `INSERT INTO memberships(workspace_id,user_id,role) VALUES($1,$2,'admin')`, id, userID); e != nil {
+			failed(w, 500, "Could not create workspace", e)
+			return
+		}
+		workspaceID = &id
+	}
+
+	if instanceName == "" {
+		instanceName = s.settings().Name
+		if instanceName == "" {
+			instanceName = "Blok"
+		}
+	}
+	if _, e = tx.Exec(r.Context(), `
+		UPDATE instance_settings SET
+		  name=$1,
+		  signup_policy=$2,
+		  workspace_creation=$3,
+		  default_workspace_id=coalesce($4, default_workspace_id),
+		  setup_completed_at=now(),
+		  updated_at=now(),
+		  updated_by=$5
+		WHERE id`, instanceName, signupPolicy, workspaceCreation, workspaceID, userID); e != nil {
+		failed(w, 500, "Could not complete setup", e)
+		return
+	}
+
+	// Possession of the mailbox still has to be proved — no session here. The
+	// code goes out BEFORE the commit: a typo or a dead relay must leave the
+	// instance claimable, token intact. Committing first would spend the setup
+	// on an address nobody can reach, with no way back but shell access.
+	if e = s.issueLoginCode(r.Context(), email, ip); e != nil {
+		if errors.Is(e, errLoginRateLimited) {
+			problem(w, 429, "Too many attempts; try again later")
+			return
+		}
+		failed(w, 503, "Email delivery unavailable", e)
+		return
+	}
+	if e = tx.Commit(r.Context()); e != nil {
+		failed(w, 500, "Could not complete setup", e)
+		return
+	}
+	_ = s.refreshSettings(r.Context())
+	jsonOut(w, 200, map[string]any{"ok": true})
+}
+
+var errLoginRateLimited = errors.New("login rate limited")
+
+func (s *Service) issueLoginCode(ctx context.Context, email, ip string) error {
+	if !s.rate(ctx, "login-ip:"+ip, 30) || !s.rate(ctx, "login-email:"+email, 8) {
+		return errLoginRateLimited
+	}
+	return s.deliverLoginCode(ctx, email)
+}
+
+// deliverLoginCode writes the OTP row and sends the mail. Callers that already
+// consumed the login rate quota (requestCode) use this directly.
+func (s *Service) deliverLoginCode(ctx context.Context, email string) error {
+	b := make([]byte, 4)
+	if _, e := rand.Read(b); e != nil {
+		return e
+	}
+	code := fmt.Sprintf("%06d", binary.BigEndian.Uint32(b)%1000000)
+	var sent string
+	e := s.DB.QueryRow(ctx, `INSERT INTO login_codes(email,digest,expires_at) VALUES($1,$2,now()+interval '10 minutes') ON CONFLICT(email) DO UPDATE SET digest=$2,expires_at=now()+interval '10 minutes',attempts=0,sent_at=now() WHERE login_codes.sent_at<now()-interval '45 seconds' RETURNING email`, email, hash(email+":"+code+":"+s.Config.InternalSecret)).Scan(&sent)
+	if e != nil {
+		return errLoginRateLimited
+	}
+	if e = s.sendLoginCode(email, code); e != nil {
+		s.DB.Exec(ctx, "DELETE FROM login_codes WHERE email=$1 AND digest=$2", email, hash(email+":"+code+":"+s.Config.InternalSecret))
+		return e
+	}
+	return nil
+}
+
+func (s *Service) sendLoginCode(email, code string) error {
+	text, markup, e := mailTemplate("login-code", map[string]string{"code": code, "publicURL": s.Config.PublicURL})
+	if e != nil {
+		return e
+	}
+	return s.send(email, "Votre code de connexion Blok", text, markup)
+}
+
+// The Node auth service owns the challenge. The mail process only delivers an
+// active code and always uses the configured sender, URL and login template.
+func (s *Service) deliverStoredLoginCode(w http.ResponseWriter, r *http.Request) {
+	if !internalAuth(r, s.Config.InternalSecret) {
+		problem(w, 401, "Internal authorization required")
+		return
+	}
+	var in struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	email, err := normalizeEmail(in.Email)
+	if err != nil || len(in.Code) != 6 || strings.Trim(in.Code, "0123456789") != "" {
+		problem(w, 400, "Invalid login mail")
+		return
+	}
+	var active bool
+	err = s.DB.QueryRow(r.Context(), "SELECT EXISTS(SELECT FROM login_codes WHERE email=$1 AND digest=$2 AND expires_at>now() AND attempts<5)", email, hash(email+":"+in.Code+":"+s.Config.InternalSecret)).Scan(&active)
+	if err != nil || !active {
+		problem(w, 409, "Login code unavailable")
+		return
+	}
+	if err = s.sendLoginCode(email, in.Code); err != nil {
+		failed(w, 503, "Email delivery unavailable", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email string `json:"email"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	email, e := normalizeEmail(in.Email)
+	if e != nil {
+		problem(w, 400, "Invalid email")
+		return
+	}
+	backend := s.Config.mailBackend()
+
+	// Before the token check, so a guess consumes the quota — claimSetup
+	// already orders it this way.
+	ip := s.clientIP(r)
+	if !s.rate(r.Context(), "setup-email-test:"+ip, 10) {
+		problem(w, 429, "Too many attempts; try again later")
+		return
+	}
+
+	tx, e := s.DB.Begin(r.Context())
+	if e != nil {
+		failed(w, 503, "Database unavailable", e)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var completed pgtype.Timestamptz
+	e = tx.QueryRow(r.Context(), `SELECT setup_completed_at FROM instance_settings WHERE id FOR UPDATE`).Scan(&completed)
+	if e != nil {
+		failed(w, 500, "Setup unavailable", e)
+		return
+	}
+	if completed.Valid {
+		problem(w, 403, "Setup already completed")
+		return
+	}
+	if e = tx.Commit(r.Context()); e != nil {
+		failed(w, 500, "Setup unavailable", e)
+		return
+	}
+
+	if e = s.sendDeliveryTest(email); e != nil {
+		jsonOut(w, 503, map[string]any{"error": e.Error(), "backend": backend})
+		return
+	}
+	jsonOut(w, 200, map[string]any{"ok": true, "backend": backend})
+}

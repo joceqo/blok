@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180">
+  <defs><rect id="icon" x="0" y="5" width="19" height="19" rx="3"/></defs>
+  <use href="#icon"/><rect x="27" y="10" width="116" height="10" rx="4"/>
+  <use href="#icon" y="30"/><rect x="27" y="40" width="96" height="10" rx="4"/>
+  <use href="#icon" y="60"/><rect x="27" y="70" width="136" height="10" rx="4"/>
+  <use href="#icon" y="90"/><rect x="27" y="100" width="96" height="10" rx="4"/>
+  <use href="#icon" y="120"/><rect x="27" y="130" width="96" height="10" rx="4"/>
+  <use href="#icon" y="150"/><rect x="27" y="160" width="76" height="10" rx="4"/>
+</svg>

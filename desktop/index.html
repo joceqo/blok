@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blok</title>
+    <script>
+      try {
+        const appearance = localStorage.getItem('blok:desktop:appearance');
+        document.documentElement.dataset.startupTheme = appearance === 'light' || appearance === 'auto' ? appearance : 'dark';
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/src/startup.css" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48x48.png" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64x64.png" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/favicon-128x128.png" />
+    <link rel="apple-touch-icon" href="/favicon-128x128.png" />
+    <link rel="stylesheet" href="/src/shell.css" />
+  </head>
+  <body>
+    <div id="app">
+      <main data-blok-startup aria-label="Démarrage de Blok" aria-busy="true">
+        <div class="startup-sidebar" aria-hidden="true">
+          <div class="sidebar-skeleton sidebar-skeleton-boot">
+            <div class="sidebar-skeleton-profile"></div>
+            <div class="sidebar-skeleton-shortcuts"><i></i><i></i><i></i><i></i></div>
+            <div class="sidebar-skeleton-heading"></div>
+            <div class="sidebar-skeleton-rows"></div>
+          </div>
+        </div>
+        <div class="startup-content">
+          <div class="startup-brand"><img src="/favicon-128x128.png" width="64" height="64" alt="" /><span>Blok</span></div>
+          <p role="status" class="startup-status"><span class="startup-spinner" aria-hidden="true"></span>Ouverture de votre espace…</p>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/start.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,198 @@
+package cloud
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Un espace porte le nom que son administrateur lui donne. Sans renommage, le
+// nom bootstrap reste celui choisi au déploiement — à corriger dans l'UI.
+func TestWorkspaceRename(t *testing.T) {
+	raw := os.Getenv("TEST_DATABASE_URL")
+	if raw == "" {
+		t.Skip("set TEST_DATABASE_URL for real PostgreSQL integration test")
+	}
+	ctx := context.Background()
+	adminDB, e := pgxpool.New(ctx, raw)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer adminDB.Close()
+	schemaName := "rename_test_" + fmt.Sprint(time.Now().UnixNano())
+	if _, e = adminDB.Exec(ctx, "CREATE SCHEMA "+schemaName); e != nil {
+		t.Fatal(e)
+	}
+	defer adminDB.Exec(ctx, "DROP SCHEMA "+schemaName+" CASCADE")
+	parsed, e := url.Parse(raw)
+	if e != nil {
+		t.Fatal(e)
+	}
+	q := parsed.Query()
+	q.Set("search_path", schemaName)
+	parsed.RawQuery = q.Encode()
+
+	cfg := Config{DatabaseURL: parsed.String(), PublicURL: "http://localhost:8080", InternalURL: "http://localhost:8080", DataDirectory: t.TempDir(), AdminEmail: "admin@example.test", BootstrapWorkspaceSlug: "acme", BootstrapWorkspaceName: "Acme", Development: true, TicketSecret: strings.Repeat("t", 40), InternalSecret: strings.Repeat("i", 40), Deliver: func(string, string, string, string) error { return nil }}
+	s, e := New(ctx, cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+
+	var wsID, adminID string
+	if e = s.DB.QueryRow(ctx, "SELECT id FROM workspaces WHERE slug='acme'").Scan(&wsID); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.DB.QueryRow(ctx, "SELECT id FROM users WHERE email='admin@example.test'").Scan(&adminID); e != nil {
+		t.Fatal(e)
+	}
+	// AdminEmail grants instance admin only; seed workspace membership for this suite.
+	if _, e = s.DB.Exec(ctx, `INSERT INTO memberships VALUES($1,$2,'admin') ON CONFLICT DO NOTHING`, wsID, adminID); e != nil {
+		t.Fatal(e)
+	}
+	newSession := func(uid string) string {
+		token := opaque()
+		if _, e = s.DB.Exec(ctx, "INSERT INTO sessions(id,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')", hash(token), uid); e != nil {
+			t.Fatal(e)
+		}
+		return token
+	}
+	newUser := func(email, role string) string {
+		id := opaque()
+		if _, e = s.DB.Exec(ctx, "INSERT INTO users(id,email) VALUES($1,$2)", id, email); e != nil {
+			t.Fatal(e)
+		}
+		if role != "" {
+			if _, e = s.DB.Exec(ctx, "INSERT INTO memberships VALUES($1,$2,$3)", wsID, id, role); e != nil {
+				t.Fatal(e)
+			}
+		}
+		return newSession(id)
+	}
+	admin := newSession(adminID)
+	member := newUser("member@example.test", "member")
+	viewer := newUser("viewer@example.test", "viewer")
+	stranger := newUser("stranger@example.test", "")
+
+	request := func(method, path, token string, payload any, status int) map[string]any {
+		t.Helper()
+		var body io.Reader
+		if payload != nil {
+			encoded, _ := json.Marshal(payload)
+			body = bytes.NewReader(encoded)
+		}
+		req, _ := http.NewRequest(method, server.URL+path, body)
+		req.Header.Set("Origin", cfg.PublicURL)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, e := http.DefaultClient.Do(req)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer resp.Body.Close()
+		encoded, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != status {
+			t.Fatalf("%s %s status %d want %d: %s", method, path, resp.StatusCode, status, encoded)
+		}
+		out := map[string]any{}
+		json.Unmarshal(encoded, &out)
+		return out
+	}
+
+	const path = "/api/workspaces/acme"
+
+	// Le defaut d'abord : un administrateur renomme son espace.
+	renamed := request("PATCH", path, admin, map[string]any{"name": "Jocehome"}, 200)
+	if renamed["name"] != "Jocehome" {
+		t.Fatalf("reponse du renommage: name=%v want Jocehome", renamed["name"])
+	}
+	var stored, slug string
+	if e = s.DB.QueryRow(ctx, "SELECT name,slug FROM workspaces WHERE id=$1", wsID).Scan(&stored, &slug); e != nil {
+		t.Fatal(e)
+	}
+	if stored != "Jocehome" {
+		t.Fatalf("nom en base: %q want Jocehome", stored)
+	}
+	// Le slug est l'URL de l'espace et la cible du bootstrap : renommer ne le touche pas.
+	if slug != "acme" {
+		t.Fatalf("slug modifie: %q want acme", slug)
+	}
+	if got := request("GET", path, admin, nil, 200); got["name"] != "Jocehome" {
+		t.Fatalf("GET apres renommage: name=%v want Jocehome", got["name"])
+	}
+
+	// Seul un administrateur renomme.
+	request("PATCH", path, member, map[string]any{"name": "Pris par un membre"}, 403)
+	request("PATCH", path, viewer, map[string]any{"name": "Pris par un lecteur"}, 403)
+	request("PATCH", path, stranger, map[string]any{"name": "Pris par un inconnu"}, 403)
+	request("PATCH", path, "", map[string]any{"name": "Pris sans session"}, 401)
+
+	// Memes bornes qu'a la creation : 1 a 120 caracteres.
+	request("PATCH", path, admin, map[string]any{"name": ""}, 400)
+	request("PATCH", path, admin, map[string]any{"name": strings.Repeat("a", 121)}, 400)
+
+	// Le commutateur d'e-mails de l'espace vit sur la meme route : le client
+	// le lit sur le GET et l'ecrit sur le PATCH, sans toucher au nom.
+	if got := request("GET", path, admin, nil, 200); got["allowNotificationMail"] != true {
+		t.Fatalf("GET: allowNotificationMail=%v want true", got["allowNotificationMail"])
+	}
+	switched := request("PATCH", path, admin, map[string]any{"allowNotificationMail": false}, 200)
+	if switched["allowNotificationMail"] != false || switched["name"] != "Jocehome" {
+		t.Fatalf("PATCH du commutateur: %v", switched)
+	}
+	if got := request("GET", path, admin, nil, 200); got["allowNotificationMail"] != false {
+		t.Fatalf("GET apres coupure: allowNotificationMail=%v want false", got["allowNotificationMail"])
+	}
+	request("PATCH", path, member, map[string]any{"allowNotificationMail": true}, 403)
+	request("PATCH", path, admin, map[string]any{"allowNotificationMail": "oui"}, 400)
+	request("PATCH", path, admin, map[string]any{}, 400)
+	// Un corps refuse n'a rien rouvert.
+	if got := request("GET", path, admin, nil, 200); got["allowNotificationMail"] != false {
+		t.Fatalf("commutateur altere par une requete refusee: %v", got["allowNotificationMail"])
+	}
+	if _, e = s.DB.Exec(ctx, "UPDATE workspaces SET allow_notification_mail=true WHERE id=$1", wsID); e != nil {
+		t.Fatal(e)
+	}
+
+	// L'icone de l'espace vit sur la meme route, aux memes bornes que celle
+	// d'un espace d'equipe.
+	if got := request("GET", path, admin, nil, 200); got["icon"] != "" {
+		t.Fatalf("GET: icon=%v want vide", got["icon"])
+	}
+	if dressed := request("PATCH", path, admin, map[string]any{"icon": "🌱"}, 200); dressed["icon"] != "🌱" {
+		t.Fatalf("PATCH de l'icone: %v", dressed)
+	}
+	request("PATCH", path, admin, map[string]any{"icon": "icon:leaf:green"}, 200)
+	// Une URL distante ferait sortir une requete du client a chaque affichage.
+	request("PATCH", path, admin, map[string]any{"icon": "https://ailleurs.test/logo.png"}, 400)
+	request("PATCH", path, member, map[string]any{"icon": "💀"}, 403)
+	if got := request("GET", path, admin, nil, 200); got["icon"] != "icon:leaf:green" {
+		t.Fatalf("icone alteree par une requete refusee: %v", got["icon"])
+	}
+	// Renommer ne deshabille pas l'espace.
+	if renamedAgain := request("PATCH", path, admin, map[string]any{"name": "Jocehome"}, 200); renamedAgain["icon"] != "icon:leaf:green" {
+		t.Fatalf("renommage ayant efface l'icone: %v", renamedAgain)
+	}
+
+	// Aucun refus n'a altere le nom.
+	if e = s.DB.QueryRow(ctx, "SELECT name FROM workspaces WHERE id=$1", wsID).Scan(&stored); e != nil {
+		t.Fatal(e)
+	}
+	if stored != "Jocehome" {
+		t.Fatalf("nom altere par une requete refusee: %q want Jocehome", stored)
+	}
+}

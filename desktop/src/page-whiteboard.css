@@ -1,0 +1,189 @@
+[data-desktop-page-breadcrumbs]:has(+ .blok-page-views) { flex: 0 1 auto; }
+.blok-page-views { display: flex; flex: none; margin-inline-start: 6px; }
+.blok-page-view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--desktop-hover, ButtonFace);
+}
+.blok-page-view-switch button {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--desktop-muted, GrayText);
+  cursor: pointer;
+}
+.blok-page-view-switch button:hover { color: var(--desktop-ink, ButtonText); }
+.blok-page-view-switch button[aria-pressed=true] {
+  background: color-mix(in srgb, var(--desktop-hover, ButtonFace), var(--desktop-ink, ButtonText) 12%);
+  color: var(--desktop-ink, ButtonText);
+}
+.blok-page-view-switch button:focus-visible { outline: 2px solid var(--desktop-focus-ring); }
+@media (max-width: 540px) {
+  [data-desktop-page-toolbar]:has(.blok-page-views) {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 44px;
+    padding-block: 5px;
+    row-gap: 2px;
+  }
+  [data-desktop-page-identity]:has(.blok-page-views) { flex-basis: 108px; }
+  [data-desktop-page-identity]:has(.blok-page-views) + [data-desktop-page-actions] { margin-inline-start: auto; }
+}
+[data-desktop-document]:has(> .blok-board-stage) {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+}
+[data-desktop-cover]:has(~ [data-desktop-document] > .blok-board-stage),
+:has(> [data-desktop-document] > .blok-board-stage) > [data-desktop-floating-toc] { display: none; }
+[data-blok-agent-editor]:has(> [data-desktop-document] > .blok-board-stage) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+:is([data-blok-agent-editor], [data-desktop-shell]) > [data-desktop-document]:has(> .blok-board-stage) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+:is([data-blok-agent-editor], [data-desktop-shell]) > [data-desktop-document] > .blok-board-stage {
+  flex: 1;
+  height: auto;
+}
+.blok-board-stage {
+  position: relative;
+  isolation: isolate;
+  height: max(240px, calc(100dvh - 130px));
+  overflow: hidden;
+  color: var(--desktop-ink, CanvasText);
+}
+.blok-board-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  overscroll-behavior: contain;
+  touch-action: none;
+  --board-paper: #141414;
+  --board-grid: rgb(49 49 49 / 35%);
+  --board-selection: #1e96eb;
+  background-color: var(--board-paper);
+  background-image: radial-gradient(var(--board-grid) 1px, transparent 1px);
+}
+[data-blok-theme="light"] .blok-board-viewport {
+  --board-paper: #fff;
+  --board-grid: #e6e6e6;
+}
+.blok-board-viewport:focus { outline: 0; }
+.blok-board-world {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 1px;
+  height: 1px;
+  transform-origin: 0 0;
+}
+.blok-board-stage:not([data-board-tool=hand],[data-board-tool=select]) .blok-board-viewport { cursor: crosshair; }
+.blok-board-stage[data-board-tool=hand] .blok-board-viewport,
+.blok-board-stage .blok-board-viewport[data-board-hand] { cursor: grab; }
+.blok-board-stage[data-board-tool=hand] .blok-board-viewport:active,
+.blok-board-stage .blok-board-viewport[data-board-hand]:active { cursor: grabbing; }
+.blok-board-page-note, .blok-board-object, .blok-board-inline-editor, .blok-board-field:not(.blok-board-inline-input) {
+  position: absolute;
+  box-sizing: border-box;
+  left: var(--board-x);
+  top: var(--board-y);
+  width: var(--board-w);
+  height: var(--board-h);
+}
+.blok-board-page-note {
+  z-index: 1;
+  min-height: var(--board-h);
+  height: auto;
+  padding: 24px 32px;
+  border: 1px solid var(--desktop-border, #8886);
+  border-radius: 8px;
+  background: var(--desktop-strip, Canvas);
+  box-shadow: 0 4px 16px #0002;
+}
+.blok-board-page-note [data-blok-redactor] { min-height: 0; padding-bottom: 0 !important; }
+.blok-board-page-note [data-blok-bottom-zone] { min-height: 12px !important; }
+.blok-board-object { z-index: 2; }
+.blok-board-world > :is([data-board-selected], .blok-board-group-bounds) {
+  translate: var(--board-drag-offset, none);
+}
+.blok-board-object[data-kind=frame] { z-index: 0; }
+.blok-board-object:is([data-kind=frame],[data-kind=pen],[data-kind=arrow]) { pointer-events: none; }
+.blok-board-world:not(:has(> .blok-board-field)) > [data-board-selected]:not([data-kind=arrow], [data-board-editing]) {
+  outline: calc(2 * var(--board-screen-pixel)) solid var(--board-selection);
+  outline-offset: 0;
+}
+.blok-board-world > [data-board-selected][data-kind=arrow]:focus-visible { outline: none; }
+[data-board-endpoint] { display: none; }
+[data-board-selected] [data-board-endpoint] {
+  display: inline;
+  fill: var(--board-paper);
+  stroke: var(--board-selection);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  r: calc(4.5 * var(--board-screen-pixel));
+  pointer-events: all;
+  cursor: crosshair;
+}
+.blok-board-field:not(.blok-board-inline-input) {
+  z-index: 4;
+  resize: none;
+  border: none;
+  border-radius: 4px;
+  padding: 10px;
+  background: var(--desktop-strip, Canvas);
+  color: inherit;
+  outline: 2px solid #428de1;
+  font: 500 16px/1.4 system-ui, sans-serif;
+}
+.blok-board-overlay { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.blok-board-message:not(:empty) {
+  position: absolute; z-index: 6; top: 12px; left: 50%; transform: translateX(-50%);
+  padding: 8px 12px; border-radius: 6px; background: var(--desktop-strip, Canvas); color: inherit;
+}
+
+.blok-board-inline-editor { z-index: 4; }
+.blok-board-object[data-board-field-open] { visibility: hidden; }
+.blok-board-inline-input {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  caret-color: currentColor;
+  font: inherit;
+  text-align: inherit;
+  pointer-events: auto;
+}
+
+.blok-board-group-bounds {
+  position: absolute;
+  left: var(--board-x);
+  top: var(--board-y);
+  width: var(--board-w);
+  height: var(--board-h);
+  outline: var(--board-screen-pixel) solid var(--board-selection);
+  pointer-events: none;
+  z-index: 5;
+}
+.blok-board-world:has(> .blok-board-group-bounds:not([hidden])) [data-board-endpoint] { display: none; }

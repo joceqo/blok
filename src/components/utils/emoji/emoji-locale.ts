@@ -26,77 +26,27 @@ const cache = new Map<string, EmojiLocaleData>();
 const pending = new Map<string, Promise<EmojiLocaleData | null>>();
 
 /**
- * Dynamic importers for each locale JSON file.
- * 65 non-English locale files; English needs no data, CLDR lacks dv and yi,
+ * Locales that have a data file.
+ * 65 non-English locales; English needs no data, CLDR lacks dv and yi,
  * and its `ku` annotations are Kurmanji rather than this product's Sorani.
  */
-const importers: Record<string, () => Promise<{ default: EmojiLocaleData }>> = {
-  am: () => import('./locales/am.json'),
-  ar: () => import('./locales/ar.json'),
-  az: () => import('./locales/az.json'),
-  bg: () => import('./locales/bg.json'),
-  bn: () => import('./locales/bn.json'),
-  bs: () => import('./locales/bs.json'),
-  cs: () => import('./locales/cs.json'),
-  da: () => import('./locales/da.json'),
-  de: () => import('./locales/de.json'),
-  el: () => import('./locales/el.json'),
-  es: () => import('./locales/es.json'),
-  et: () => import('./locales/et.json'),
-  fa: () => import('./locales/fa.json'),
-  fi: () => import('./locales/fi.json'),
-  fil: () => import('./locales/fil.json'),
-  fr: () => import('./locales/fr.json'),
-  gu: () => import('./locales/gu.json'),
-  he: () => import('./locales/he.json'),
-  hi: () => import('./locales/hi.json'),
-  hr: () => import('./locales/hr.json'),
-  hu: () => import('./locales/hu.json'),
-  hy: () => import('./locales/hy.json'),
-  id: () => import('./locales/id.json'),
-  it: () => import('./locales/it.json'),
-  ja: () => import('./locales/ja.json'),
-  ka: () => import('./locales/ka.json'),
-  km: () => import('./locales/km.json'),
-  kn: () => import('./locales/kn.json'),
-  ko: () => import('./locales/ko.json'),
-  lo: () => import('./locales/lo.json'),
-  lt: () => import('./locales/lt.json'),
-  lv: () => import('./locales/lv.json'),
-  mk: () => import('./locales/mk.json'),
-  ml: () => import('./locales/ml.json'),
-  mn: () => import('./locales/mn.json'),
-  mr: () => import('./locales/mr.json'),
-  ms: () => import('./locales/ms.json'),
-  my: () => import('./locales/my.json'),
-  ne: () => import('./locales/ne.json'),
-  nl: () => import('./locales/nl.json'),
-  no: () => import('./locales/no.json'),
-  pa: () => import('./locales/pa.json'),
-  pl: () => import('./locales/pl.json'),
-  ps: () => import('./locales/ps.json'),
-  pt: () => import('./locales/pt.json'),
-  ro: () => import('./locales/ro.json'),
-  ru: () => import('./locales/ru.json'),
-  sd: () => import('./locales/sd.json'),
-  si: () => import('./locales/si.json'),
-  sk: () => import('./locales/sk.json'),
-  sl: () => import('./locales/sl.json'),
-  sq: () => import('./locales/sq.json'),
-  sr: () => import('./locales/sr.json'),
-  sv: () => import('./locales/sv.json'),
-  sw: () => import('./locales/sw.json'),
-  ta: () => import('./locales/ta.json'),
-  te: () => import('./locales/te.json'),
-  th: () => import('./locales/th.json'),
-  tr: () => import('./locales/tr.json'),
-  ug: () => import('./locales/ug.json'),
-  uk: () => import('./locales/uk.json'),
-  ur: () => import('./locales/ur.json'),
-  vi: () => import('./locales/vi.json'),
-  zh: () => import('./locales/zh.json'),
-  'zh-TW': () => import('./locales/zh-TW.json'),
-};
+const LOCALES_WITH_DATA = new Set([
+  'am', 'ar', 'az', 'bg', 'bn', 'bs', 'cs', 'da', 'de', 'el', 'es', 'et', 'fa', 'fi', 'fil',
+  'fr', 'gu', 'he', 'hi', 'hr', 'hu', 'hy', 'id', 'it', 'ja', 'ka', 'km', 'kn', 'ko', 'lo',
+  'lt', 'lv', 'mk', 'ml', 'mn', 'mr', 'ms', 'my', 'ne', 'nl', 'no', 'pa', 'pl', 'ps', 'pt',
+  'ro', 'ru', 'sd', 'si', 'sk', 'sl', 'sq', 'sr', 'sv', 'sw', 'ta', 'te', 'th', 'tr', 'ug',
+  'uk', 'ur', 'vi', 'zh', 'zh-TW',
+]);
+
+/**
+ * Loads one locale's JSON. The specifier is built from `locale` rather than
+ * written out 65 times, so TypeScript never resolves the files themselves:
+ * typing them costs ~200k types, 42% of the program's memory and time.
+ * Vite still maps every file in the folder, so each locale stays its own lazy
+ * chunk and the build-time locale codec still sees them as it did.
+ */
+const importLocaleFile = (locale: string): Promise<{ default: EmojiLocaleData }> =>
+  import(`./locales/${locale}.json`) as Promise<{ default: EmojiLocaleData }>;
 
 /**
  * Lazy-load and cache locale data.
@@ -113,9 +63,7 @@ export async function loadEmojiLocale(locale: string): Promise<EmojiLocaleData |
     return cached;
   }
 
-  const importer = importers[locale];
-
-  if (importer === undefined) {
+  if (!LOCALES_WITH_DATA.has(locale)) {
     return null;
   }
 
@@ -125,7 +73,7 @@ export async function loadEmojiLocale(locale: string): Promise<EmojiLocaleData |
     return inFlight;
   }
 
-  const load = importLocale(locale, importer).finally(() => {
+  const load = importLocale(locale, () => importLocaleFile(locale)).finally(() => {
     pending.delete(locale);
   });
 

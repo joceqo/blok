@@ -1,0 +1,35 @@
+{
+  "name": "@bloklabs/service-node",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Blok cloud host \u2014 Hono + PostgreSQL + Drizzle",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/shell/main.ts",
+    "start": "node dist/shell/main.js",
+    "build": "tsc && node ../../scripts/build-hosted-mcp.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "start:shell": "node dist/shell/main.js",
+    "predev": "node ../../scripts/build-hosted-mcp.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.6",
+    "drizzle-orm": "^0.44.7",
+    "hono": "^4.10.6",
+    "jsonc-parser": "3.3.1",
+    "nodemailer": "^10.6.1",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.15.6",
+    "tsx": "^4.20.6",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,168 @@
+name: blok-local
+services:
+  postgres:
+    image: ${BLOK_POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: blok
+      POSTGRES_USER: blok
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run demo.sh first}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U blok -d blok']
+      interval: 3s
+      timeout: 5s
+      retries: 30
+  app:
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-app:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: service
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 90s
+    environment:
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+      GOOGLE_CALENDAR_REDIRECT_URI: ${GOOGLE_CALENDAR_REDIRECT_URI:-}
+      PUBLIC_URL: http://localhost:${DEMO_WEB_PORT:-8088}
+      PORT: '8081'
+      DATA_DIRECTORY: /data
+      BLOK_NODE_ROOM_ALL: '1'
+      MCP_SYNC_URL: ws://127.0.0.1:18102/api/blok/sync
+      DATABASE_URL: &demo_database postgres://blok:${POSTGRES_PASSWORD}@postgres:5432/blok
+      TICKET_SECRET: ${TICKET_SECRET:?Set TICKET_SECRET}
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?Set INTERNAL_SECRET}
+      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:1420,http://127.0.0.1:1420}
+      MAILER_HOST: ${MAILER_HOST:-${SMTP_HOST:-}}
+      MAILER_PORT: ${MAILER_PORT:-${SMTP_PORT:-587}}
+      MAILER_USER: ${MAILER_USER:-${SMTP_USERNAME:-}}
+      MAILER_PASSWORD: ${MAILER_PASSWORD:-${SMTP_PASSWORD:-}}
+      MAILER_FROM_EMAIL: ${MAILER_FROM_EMAIL:-}
+      MAILER_FROM_NAME: ${MAILER_FROM_NAME:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-onboarding@resend.dev}
+      APP_ENV: development
+      BLOK_DEVELOPMENT: '1'
+      DEV_MAIL_DIRECTORY: ${DEV_MAIL_DIRECTORY-/data/mail}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL-admin@example.test}
+      BOOTSTRAP_WORKSPACE_SLUG: ${BOOTSTRAP_WORKSPACE_SLUG-equipe}
+      BOOTSTRAP_WORKSPACE_NAME: ${BOOTSTRAP_WORKSPACE_NAME-Équipe}
+      TRUSTED_PROXY_CIDRS: ${DEMO_NETWORK_PREFIX:-172.30.88}.3/32
+    volumes:
+      - state:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8081/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 4s
+      retries: 35
+  room:
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-app:local
+    pull_policy: never
+    network_mode: service:app
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 90s
+    command: ["/room/bin/blok-journal-room.mjs", "/data/collab", "--all", "http://localhost:${DEMO_WEB_PORT:-8088}", "18102"]
+    environment:
+      BLOK_ROOM_LISTEN_HOST: 0.0.0.0
+      BLOK_ROOM_CLOUD_ORIGIN: http://127.0.0.1:8081
+      BLOK_ROOM_PROJECTION_ORIGIN: http://127.0.0.1:8081
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?Set INTERNAL_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:1420,http://127.0.0.1:1420}
+    volumes:
+      - state:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:18102/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 4s
+      retries: 35
+  media:
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-app:local
+    pull_policy: never
+    network_mode: service:app
+    init: true
+    restart: unless-stopped
+    command: ["/room/bin/blok-server.mjs", "--listen", "127.0.0.1:18103", "--auth", "ticket", "--public-url", "http://localhost:${DEMO_WEB_PORT:-8088}/files", "--allow-origin", "http://localhost:${DEMO_WEB_PORT:-8088}", "--storage-dir", "/data/uploads", "--rate-limit", "600"]
+    environment:
+      BLOK_SECRET: ${TICKET_SECRET:?Set TICKET_SECRET}
+    volumes:
+      - state:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:18103/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 4s
+      retries: 35
+  web:
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-web:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+      args:
+        VITE_REACT_GRAB: "true"
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: ${DEMO_NETWORK_PREFIX:-172.30.88}.3
+    ports:
+      - '127.0.0.1:${DEMO_WEB_PORT:-8088}:80'
+    depends_on:
+      app:
+        condition: service_healthy
+      room:
+        condition: service_healthy
+      media:
+        condition: service_healthy
+  mailbox:
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: [python, /scripts/local-mailbox.py]
+    environment:
+      MAIL_DIRECTORY: /data/mail
+    volumes:
+      - ./local-mailbox.py:/scripts/local-mailbox.py:ro
+      - state:/data:ro
+    ports:
+      - '127.0.0.1:${DEMO_MAIL_PORT:-8089}:8025'
+  seed:
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-app:local
+    pull_policy: never
+    profiles: [tools]
+    command: ["/app/dist/shell/blokctl.js", "demo", "seed"]
+    environment:
+      DATABASE_URL: *demo_database
+      APP_ENV: development
+      DEV_MAIL_DIRECTORY: ${DEV_MAIL_DIRECTORY-/data/mail}
+      MAILER_HOST: ${MAILER_HOST:-${SMTP_HOST:-}}
+      RESEND_API_KEY: ${RESEND_API_KEY:+configured}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL-admin@example.test}
+      BOOTSTRAP_WORKSPACE_SLUG: ${BOOTSTRAP_WORKSPACE_SLUG-equipe}
+      DEMO_MEMBER_EMAIL: ${DEMO_MEMBER_EMAIL:-membre@example.test}
+      DEMO_REQUESTER_EMAIL: ${DEMO_REQUESTER_EMAIL:-demandeur@example.test}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
+      DEMO_MEMBER_PASSWORD: ${DEMO_MEMBER_PASSWORD:-}
+      DEMO_REQUESTER_PASSWORD: ${DEMO_REQUESTER_PASSWORD:-}
+    volumes:
+      - state:/data:ro
+volumes:
+  postgres:
+  state:
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${DEMO_NETWORK_PREFIX:-172.30.88}.0/24
+          ip_range: ${DEMO_NETWORK_PREFIX:-172.30.88}.128/25

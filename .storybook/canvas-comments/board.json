@@ -1,0 +1,52 @@
+{
+  "boards": [
+    {
+      "components": [],
+      "edits": [],
+      "frames": [
+        {
+          "height": 760,
+          "width": 1120,
+          "x": 0,
+          "y": 0,
+          "args": "",
+          "id": "e5aa6652-6388-4420-8bdd-6aa1b53e5949",
+          "label": "Shell/Desktop/Couverture / Galerie",
+          "storyId": "shell-desktop-couverture--galerie",
+          "title": "Shell/Desktop/Couverture / Galerie"
+        },
+        {
+          "height": 760,
+          "width": 1120,
+          "x": 1200,
+          "y": 0,
+          "args": "",
+          "id": "e2aac9ff-7951-4c26-a25f-fdd9e08d9449",
+          "label": "Shell/Notifications / Non lues",
+          "storyId": "shell-notifications--non-lues",
+          "title": "Shell/Notifications / Non lues"
+        },
+        {
+          "height": 760,
+          "width": 1120,
+          "x": 2400,
+          "y": 0,
+          "args": "",
+          "id": "b0b7bbd2-cbbf-414b-a0c4-445d9c92e504",
+          "label": "Shell/Calendrier / Agendas superposés",
+          "storyId": "shell-calendrier--agendas-superposes",
+          "title": "Shell/Calendrier / Agendas superposés"
+        }
+      ],
+      "id": "799ee233-1c02-4dae-abdb-f47b112f0a6a",
+      "name": "Blok · Shell desktop",
+      "notes": [],
+      "updatedAt": "2026-11-25T07:48:24.081Z"
+    }
+  ],
+  "version": 1,
+  "review": {
+    "status": "reviewing",
+    "updatedAt": null
+  }
+}

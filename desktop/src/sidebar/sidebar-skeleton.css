@@ -1,0 +1,52 @@
+/* Le même motif sert à la liste qui remplit la fenêtre et aux groupes de cinq pages. */
+.sidebar-skeleton-rows {
+  height: 150px;
+  background-color: currentColor;
+  mask: url('./sidebar-skeleton-rows.svg') left top / 180px 180px repeat-y;
+}
+.sidebar-skeleton {
+  color: color-mix(in srgb, currentColor 5.5%, transparent);
+  pointer-events: none;
+  animation: sidebar-skeleton-pulse 1.8s ease-in-out infinite alternate;
+}
+@keyframes sidebar-skeleton-pulse { to { opacity: .65; } }
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-skeleton { animation: none; }
+}
+.sidebar-skeleton-heading,
+.sidebar-skeleton-shortcuts i {
+  display: block;
+  width: 54px;
+  height: 10px;
+  border-radius: 4px;
+  background: currentColor;
+}
+.sidebar-skeleton-shortcuts {
+  display: grid;
+  gap: 20px;
+  margin: 23px 0 34px;
+}
+.sidebar-skeleton-shortcuts i { width: 76px; }
+.sidebar-skeleton-shortcuts i:last-child { width: 132px; }
+.sidebar-skeleton-profile { display: flex; align-items: center; gap: 8px; }
+.sidebar-skeleton-profile::before,
+.sidebar-skeleton-profile::after {
+  content: '';
+  background: currentColor;
+  border-radius: 4px;
+}
+.sidebar-skeleton-profile::before { width: 22px; height: 22px; }
+.sidebar-skeleton-profile::after { width: 172px; height: 10px; }
+.sidebar-skeleton-boot {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 14px;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.sidebar-skeleton-boot > :not(.sidebar-skeleton-rows) { flex-shrink: 0; }
+.sidebar-skeleton-boot .sidebar-skeleton-rows { flex: 1; margin-top: 8px; }
+.sidebar-skeleton-pages { padding: 6px 8px 0; }
+.sidebar-skeleton-pages .sidebar-skeleton-heading { margin: 5px 0 9px; }

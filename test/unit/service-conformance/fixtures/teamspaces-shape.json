@@ -1,0 +1,17 @@
+{
+  "description": "Teamspace API HTTP shapes. noDb cases run in-process with createApp({ database: undefined }) — unmounted /api/* returns 503 database_not_configured.",
+  "cases": [
+    {
+      "name": "GET /api/workspaces/:workspaceId/teamspaces (no DB)",
+      "method": "GET",
+      "path": "/api/workspaces/00000000-0000-0000-0000-000000000001/teamspaces",
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
+        }
+      }
+    }
+  ]
+}

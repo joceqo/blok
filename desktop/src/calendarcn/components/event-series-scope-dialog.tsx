@@ -1,0 +1,252 @@
+"use client";
+
+import {shellText} from '../../shell-i18n';
+import * as React from "react";
+
+import { cn } from "../lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "./ui/dialog";
+import { useCalendarSeriesScope } from "./calendar-provider";
+import {
+  EVENT_DETAIL_ACCENT_BG_CLASS,
+  EVENT_DETAIL_DIALOG_BUTTON_CLASS,
+  EVENT_DETAIL_DIALOG_CLASS,
+  EVENT_DETAIL_SECONDARY_CLASS,
+  RadioDot,
+} from "./event-detail-parts";
+import type {
+  EventChangeSummaryRow,
+  SeriesEditScope,
+  SeriesScopeQuestion,
+} from "./calendar-types";
+
+/** Each option's label, as Notion Calendar words it */
+const SERIES_SCOPE_LABELS: Record<SeriesEditScope, string> = {
+  this: "This event",
+  following: "This and following events",
+  all: "All events",
+};
+
+/** The question's title, Notion's, before the quoted event title */
+const SERIES_SCOPE_TITLES: Record<SeriesScopeQuestion["action"], string> = {
+  update: "Edit repeat event",
+  delete: "Delete repeat event",
+};
+
+/** A neutral button: Continue editing, Cancel */
+const NEUTRAL_BUTTON_CLASS = cn(
+  "h-8 whitespace-nowrap rounded-md px-3",
+  EVENT_DETAIL_DIALOG_BUTTON_CLASS,
+);
+
+/** A filled button: Save event in the selection color, Delete event in the danger one */
+const FILLED_BUTTON_CLASS =
+  "h-8 whitespace-nowrap rounded-md px-3 hover:brightness-110";
+
+/** Color of Discard change and Delete event, the details' delete color */
+const DESTRUCTIVE_TEXT_CLASS = "text-calendar-danger";
+
+/** One line of the edit question's summary: the label, the new value, the old one struck */
+function SummaryRow({ row }: { row: EventChangeSummaryRow }) {
+  return (
+    <div className="flex gap-3">
+      <span className={cn("w-20 shrink-0", EVENT_DETAIL_SECONDARY_CLASS)}>
+        {row.label}
+      </span>
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate">
+          {row.after ?? shellText("Changed")}
+          <span aria-hidden className="ml-1.5 text-[8px] align-middle">
+            {"●"}
+          </span>
+        </span>
+        {row.before !== null && (
+          <span
+            className={cn(
+              "truncate line-through",
+              EVENT_DETAIL_SECONDARY_CLASS,
+            )}
+          >
+            {row.before}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Notion Calendar's question after a change to a date of a repeating event:
+ * "This event", "This and following events" (not on the first date) or "All
+ * events". The edit question lists what changed and offers Discard change,
+ * Continue editing and Save event; the delete question Cancel and Delete
+ * event. The views render one; render it once yourself in a layout that has
+ * none of them.
+ */
+export function EventSeriesScopeDialog() {
+  const { question, answer, registerDialog } = useCalendarSeriesScope();
+  /** The last question, kept on screen while the dialog closes */
+  const [shownQuestion, setShownQuestion] =
+    React.useState<SeriesScopeQuestion | null>(null);
+  const [scope, setScope] = React.useState<SeriesEditScope>("this");
+  /**
+   * True while the event that opened the question is still being handled.
+   * The Escape that leaves an event opens the question, and Base UI's
+   * dialog, which starts listening as it opens, would take that same key as
+   * a request to close
+   */
+  const isOpeningRef = React.useRef(false);
+  // A new question starts on its first option. Adjusted while rendering,
+  // so its first frame already has it
+  if (question && question !== shownQuestion) {
+    setShownQuestion(question);
+    setScope(question.scopes[0] ?? "this");
+  }
+  const shown = question ?? shownQuestion;
+
+  React.useEffect(() => registerDialog(), [registerDialog]);
+
+  React.useLayoutEffect(() => {
+    if (!question) return;
+    isOpeningRef.current = true;
+    const timer = window.setTimeout(() => {
+      isOpeningRef.current = false;
+    });
+    return () => {
+      window.clearTimeout(timer);
+      isOpeningRef.current = false;
+    };
+  }, [question]);
+
+  const isDelete = shown?.action === "delete";
+  const summary = shown?.summary ?? [];
+
+  return (
+    // Stays mounted while closed, so its Escape handling always runs
+    <Dialog
+      open={question !== null}
+      onOpenChange={(open) => {
+        if (open || isOpeningRef.current) return;
+        // Escape never discards: it continues editing, or cancels a delete
+        answer({ action: isDelete ? "cancel" : "continue" });
+      }}
+    >
+      <DialogContent
+        showCloseButton={false}
+        // Inside the event details as far as their popover and the views'
+        // click handlers are concerned, so it doesn't close them
+        data-calendar-popover=""
+        className={cn(
+          "w-[420px] max-w-[calc(100vw-32px)] gap-4 rounded-xl p-5 text-sm font-medium",
+          EVENT_DETAIL_DIALOG_CLASS,
+        )}
+        // Keys stay in the question: Escape must not deselect the event and
+        // single-key shortcuts must not move the calendar behind it. Tab is
+        // left to the dialog's focus trap
+        onKeyDown={(e) => {
+          if (e.key !== "Tab") e.stopPropagation();
+        }}
+      >
+        <DialogTitle className="text-base font-medium">
+          {shown ? shellText("{v0} “{v1}”", {v0: SERIES_SCOPE_TITLES[shown.action], v1: shown.title}) : ""}
+        </DialogTitle>
+        <DialogDescription className="sr-only">
+          {shellText("Choose which events of the series the change applies to")}
+        </DialogDescription>
+        <div
+          role="radiogroup"
+          aria-label={shellText("Apply to")}
+          className="flex flex-col gap-1"
+        >
+          {shown?.scopes.map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={scope === option}
+              onClick={() => setScope(option)}
+              className="flex h-8 items-center gap-2.5 text-left text-foreground outline-none focus-visible:underline"
+            >
+              <RadioDot checked={scope === option} />
+              {SERIES_SCOPE_LABELS[option]}
+            </button>
+          ))}
+        </div>
+        {!isDelete && summary.length > 0 && (
+          <div className="flex flex-col gap-2.5 border-t border-calendar-detail-hover-border pt-4">
+            {summary.map((row) => (
+              <SummaryRow key={row.label} row={row} />
+            ))}
+          </div>
+        )}
+        {isDelete ? (
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => answer({ action: "cancel" })}
+              className={NEUTRAL_BUTTON_CLASS}
+            >
+              {shellText("Cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={() => answer({ action: "delete", scope })}
+              className={cn(
+                FILLED_BUTTON_CLASS,
+                "bg-calendar-danger text-calendar-danger-foreground",
+              )}
+            >
+              {shellText("Delete event")}
+            </button>
+          </div>
+        ) : (
+          // Wraps on phones rather than squeezing the labels
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => answer({ action: "discard" })}
+              className={cn(
+                "mr-auto h-8 whitespace-nowrap rounded-md px-1 hover:underline",
+                DESTRUCTIVE_TEXT_CLASS,
+              )}
+            >
+              {shellText("Discard change")}
+            </button>
+            <button
+              type="button"
+              onClick={() => answer({ action: "continue" })}
+              className={NEUTRAL_BUTTON_CLASS}
+            >
+              {shellText("Continue editing")}
+            </button>
+            <button
+              type="button"
+              onClick={() => answer({ action: "save", scope })}
+              className={cn(FILLED_BUTTON_CLASS, EVENT_DETAIL_ACCENT_BG_CLASS)}
+            >
+              {shellText("Save event")}
+            </button>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The dot before the title of an event whose change waits for the series
+ * question (Notion's pending change). Draws nothing for other events
+ */
+export function SeriesChangeDot({ eventId }: { eventId: string }) {
+  const { pendingEventId } = useCalendarSeriesScope();
+  if (pendingEventId !== eventId) return null;
+  return (
+    <span aria-hidden className="mr-1 inline-block align-middle text-[8px]">
+      {"●"}
+    </span>
+  );
+}

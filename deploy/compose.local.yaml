@@ -1,0 +1,50 @@
+# Pair with compose.demo.yaml via local.sh.
+x-local-storage: &local-storage
+  BLOK_S3_BUCKET: blok-assets
+  BLOK_S3_ENDPOINT: http://127.0.0.1:8333
+  BLOK_S3_REGION: us-east-1
+  BLOK_S3_ADDRESSING: path
+  BLOK_S3_ACCESS_KEY: ${LOCAL_S3_ACCESS_KEY:?Run local.sh install}
+  BLOK_S3_SECRET_KEY: ${LOCAL_S3_SECRET_KEY:?Run local.sh install}
+
+services:
+  s3:
+    image: chrislusf/seaweedfs:4.55@sha256:7ca46aeae2f223b37e5d91593c17ab37738eec6df6ab69b48a0487f7643342b9
+    network_mode: service:app
+    command: [mini, -dir=/data, -ip=127.0.0.1, -ip.bind=127.0.0.1]
+    restart: unless-stopped
+    environment:
+      AWS_ACCESS_KEY_ID: ${LOCAL_S3_ACCESS_KEY:?Run local.sh install}
+      AWS_SECRET_ACCESS_KEY: ${LOCAL_S3_SECRET_KEY:?Run local.sh install}
+      S3_BUCKET: blok-assets
+    volumes:
+      - s3data:/data
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8333/readyz]
+      interval: 3s
+      timeout: 4s
+      retries: 40
+  app:
+    environment:
+      <<: *local-storage
+      BOOTSTRAP_ADMIN_EMAIL: ""
+      BOOTSTRAP_WORKSPACE_SLUG: ""
+      BOOTSTRAP_WORKSPACE_NAME: ""
+      DEV_MAIL_DIRECTORY: ""
+      MAILER_HOST: ""
+      RESEND_API_KEY: ""
+  media:
+    depends_on:
+      s3:
+        condition: service_healthy
+    environment:
+      <<: *local-storage
+  web:
+    build:
+      args:
+        VITE_REACT_GRAB: "false"
+  mailbox:
+    profiles: [tools]
+
+volumes:
+  s3data:

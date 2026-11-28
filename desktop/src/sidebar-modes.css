@@ -1,0 +1,126 @@
+/* Les utilitaires de navigation sont préfixés pour conserver les styles du shell. */
+@import "tailwindcss/theme.css" theme(reference) prefix(sb);
+@import "tailwindcss/utilities.css" source(none);
+@source "./sidebar-mode-item.tsx";
+
+.sidebar-resize-tooltip {
+  position: absolute;
+  left: 100%;
+  z-index: 2;
+  width: max-content;
+  pointer-events: none;
+  padding: 4px 8px;
+  border-radius: var(--blok-radius-control-sm);
+  background: var(--blok-popover-bg);
+  color: var(--blok-text-secondary);
+  box-shadow: var(--blok-popover-box-shadow);
+  font-size: 12px;
+}
+
+fieldset[data-desktop-menu-group] {
+  min-inline-size: 0;
+  margin-inline: 0;
+  padding-inline: 0;
+  padding-bottom: 0;
+  border-inline: 0;
+  border-bottom: 0;
+}
+
+/* Base UI place le portail. Les couleurs et les dimensions viennent de la sidebar. */
+[data-blok-sidebar-menu][data-blok-dropdown-menu][role=menu] {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  max-height: var(--available-height);
+}
+[data-blok-sidebar-menu] button[data-highlighted] { background: var(--blok-item-hover-bg); }
+[data-blok-sidebar-row]:has([data-blok-sidebar-more][aria-expanded=true]) :is([data-blok-sidebar-add], [data-blok-sidebar-more]) { display: inline-flex; opacity: 1; }
+[data-desktop-footer-menu][data-blok-dropdown-menu] {
+  position: static;
+  max-height: var(--available-height);
+}
+[data-blok-dropdown-menu][data-desktop-help-popover] { min-width: 220px; }
+[data-blok-dropdown-menu][data-desktop-destinations-popover] { min-width: 240px; }
+[data-blok-dropdown-menu] [data-desktop-menu-account][data-highlighted],
+[data-blok-dropdown-menu] [data-desktop-menu-item][data-highlighted] { background: var(--desktop-hover); }
+
+[data-sidebar-preferences-menu][data-blok-sidebar-menu] { width: 210px; }
+:is([data-sidebar-preferences-menu], [data-desktop-help-popover], [data-desktop-destinations-popover])[data-blok-dropdown-menu] {
+  gap: 0;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--blok-radius-control, 8px);
+  background: var(--blok-popover-bg, var(--desktop-strip));
+  color: var(--blok-text-primary, var(--desktop-ink));
+  box-shadow: var(--blok-popover-box-shadow);
+  display: grid;
+}
+:is([data-desktop-help-popover], [data-desktop-destinations-popover]) [data-desktop-menu-item] {
+  height: 32px;
+  padding: 0 8px;
+}
+
+:is([data-sidebar-preferences-menu], [data-desktop-help-popover], [data-desktop-destinations-popover])[data-blok-dropdown-menu] [role^="menuitem"] {
+  margin-bottom: 1px;
+  color: var(--blok-popover-item-label-text, var(--blok-text-primary));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+[data-blok-dropdown-menu][data-desktop-destinations-popover] [data-blok-popover-item] {
+  height: 28px;
+  gap: 0;
+  padding: 3px 10px;
+}
+[data-blok-dropdown-menu][data-desktop-help-popover] [aria-disabled=true] {
+  color: var(--blok-text-secondary);
+  opacity: 1;
+}
+
+[data-sidebar-preferences-menu][data-blok-sidebar-menu] button {
+  padding-inline-end: 12px;
+  border-radius: 6px;
+}
+
+.sidebar-shortcut-row { position: relative; margin-block: 1px; }
+.sidebar-shortcut-row [data-blok-sidebar-shortcut] { padding-inline: 10px 36px; gap: 10px; border-radius: 6px; color: var(--blok-sidebar-label); }
+.sidebar-shortcut-row:has(:is(:hover,:focus-visible,[aria-expanded=true])) { background: var(--blok-item-hover-bg); border-radius: 6px; }
+.sidebar-shortcut-row > [data-sidebar-nav-more] {
+  display: inline-grid; place-items: center; width: 21px; height: 21px; flex: none;
+  margin-inline-end: 6px; padding: 0; border: 0; border-radius: 5px;
+  background: transparent; color: var(--blok-sidebar-heading); cursor: pointer; opacity: 0;
+}
+.sidebar-shortcut-row > [data-sidebar-nav-more] { position: absolute; inset-inline-end: 2px; top: 50%; transform: translateY(-50%); }
+.sidebar-shortcut-row:is(:hover,:focus-within) [data-sidebar-nav-more],
+.sidebar-shortcut-row > [data-sidebar-nav-more][aria-expanded=true] { opacity: 1; }
+[data-sidebar-nav-more]:is(:hover,:focus-visible,[aria-expanded=true]) { background: var(--blok-item-hover-bg); color: var(--blok-sidebar-label); }
+@media (hover:none) { .sidebar-shortcut-row > [data-sidebar-nav-more] { opacity: 1; } }
+[data-sidebar-navigation-menu][data-blok-dropdown-menu] {
+  min-width: min(224px,var(--available-width)); width: max-content; padding: 5px;
+  background: var(--blok-popover-bg); border-radius: 9px; border: 1px solid var(--blok-popover-border);
+}
+[data-sidebar-navigation-menu] [role^="menuitem"] {
+  display: flex; align-items: center; gap: 10px; padding: 5px 9px; min-height: 30px; border-radius: 5px;
+  background: transparent; color: var(--blok-text-primary); font: inherit; font-size: 14px;
+}
+[data-sidebar-navigation-menu] [role^="menuitem"]:is([data-highlighted],[data-popup-open]) { background: var(--blok-item-hover-bg); }
+[data-sidebar-navigation-menu] [role^="menuitem"] svg { width: 16px; height: 16px; flex: none; }
+[data-sidebar-navigation-menu] [role="menuitemcheckbox"] { width: 100%; border: 0; }
+[data-sidebar-navigation-menu] [data-blok-sidebar-menu-label] { flex: 1; text-align: start; }
+[data-sidebar-navigation-menu] small { margin-inline-start: auto; color: var(--blok-text-secondary); }
+[data-sidebar-navigation-menu] [data-blok-sidebar-menu-separator] { height: 1px; margin: 4px 7px; background: var(--blok-popover-border); }
+[data-blok-sidebar-section="events"] > [data-blok-sidebar-shortcut] { padding-inline: 10px; gap: 10px; }
+.sidebar-upcoming-skeleton { height:30px; margin-inline:8px; }
+.sidebar-upcoming-list { list-style:none; padding:0 8px; margin:0; }
+.sidebar-upcoming-list li { display:flex; align-items:baseline; gap:6px; padding:6px 0; font-size:14px; }
+.sidebar-upcoming-list li span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sidebar-upcoming-list time { font-size:11px; color:var(--blok-text-secondary); }
+
+
+.sidebar-suggestions { margin: 0 12px 10px; }
+.sidebar-customize-row { display: flex; flex: none; align-items: center; margin: 4px 8px 8px; border-radius: 6px; }
+.sidebar-customize-row [data-blok-sidebar-customize] { flex: 1; min-width: 0; margin: 0; }
+.sidebar-customize-row .shell-dismiss-button { margin-inline-end: 4px; }
+@media (hover: hover) {
+  .sidebar-customize-row:not(:hover, :focus-within) .shell-dismiss-button { opacity: 0; }
+}

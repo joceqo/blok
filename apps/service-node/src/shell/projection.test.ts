@@ -1,0 +1,66 @@
+import { describe, expect, it } from 'vitest';
+import { projectionDecision, readProjectionHeaders, type ProjectionHead } from './projection.ts';
+
+const stored: ProjectionHead = { version: '3', lineage: 'first', sequence: '10' };
+
+describe('shell projection concurrency', () => {
+  it('applies an edit against the loaded version and refuses a stale writer', () => {
+    expect(projectionDecision(stored, { ...stored, sequence: '11' }, false)).toBe('write');
+    expect(projectionDecision(stored, { ...stored, version: '2', sequence: '11' }, false)).toBe('conflict');
+  });
+
+  it('acknowledges a retry after a lost response without incrementing the version', () => {
+    expect(projectionDecision(stored, { ...stored, version: '2' }, true)).toBe('retry');
+    expect(projectionDecision(stored, stored, false)).toBe('conflict');
+  });
+
+  it('rejects an older journal snapshot even with the current version', () => {
+    expect(projectionDecision(stored, { ...stored, sequence: '9' }, false)).toBe('conflict');
+  });
+
+  it('requires a matching version to switch lineages', () => {
+    expect(projectionDecision(stored, { ...stored, lineage: 'second', sequence: '0' }, false)).toBe('write');
+    for (const version of ['', '1']) {
+      expect(projectionDecision(stored, { version, lineage: 'second', sequence: '0' }, false)).toBe('conflict');
+    }
+  });
+
+  it('handles a journal recovery before the version read returns', () => {
+    expect(projectionDecision(stored, { ...stored, version: '', sequence: '11' }, false)).toBe('write');
+    expect(projectionDecision({ version: '0', sequence: null, lineage: null }, { ...stored, version: '' }, false)).toBe('write');
+  });
+
+  it('requires complete explicit head metadata for strict writers', () => {
+    const headers = new Headers({'Blok-Doc-If-Match':'exact','Blok-Doc-Lineage':'first','Blok-Doc-Sequence':'1','Blok-Doc-Version':'0'});
+    expect(readProjectionHeaders(headers)).toBeUndefined();
+    headers.set('Blok-Doc-Expected-Lineage','');
+    headers.set('Blok-Doc-Expected-Sequence','');
+    expect(readProjectionHeaders(headers)?.expected).toEqual({lineage:null,sequence:null});
+    headers.set('Blok-Doc-Expected-Sequence','1');
+    expect(readProjectionHeaders(headers)).toBeUndefined();
+    headers.delete('Blok-Doc-If-Match');
+    expect(readProjectionHeaders(headers)).toBeUndefined();
+  });
+
+  it('reads unsigned sequence numbers without losing precision', () => {
+    const headers = new Headers({ 'Blok-Doc-Sequence': '18446744073709551615', 'Blok-Doc-Lineage': 'first' });
+    expect(readProjectionHeaders(headers)?.sequence).toBe('18446744073709551615');
+    headers.set('Blok-Doc-Sequence', '18446744073709551616');
+    expect(readProjectionHeaders(headers)).toBeUndefined();
+    headers.delete('Blok-Doc-Sequence');
+    expect(readProjectionHeaders(headers)).toBeUndefined();
+  });
+});
+
+it('rebaselines only the exact canonical state and rejects ordinary cross-lineage writes',()=>{
+  const headers=new Headers({'Blok-Doc-Reset':'1','Blok-Doc-If-Match':'exact','Blok-Doc-Version':'3','Blok-Doc-Lineage':'a'.repeat(32),
+    'Blok-Doc-Sequence':'0','Blok-Doc-Expected-Lineage':'first','Blok-Doc-Expected-Sequence':'10'});
+  const reset=readProjectionHeaders(headers)!;
+  expect(projectionDecision(stored,reset,true)).toBe('write');
+  expect(projectionDecision(stored,reset,false)).toBe('conflict');
+  expect(projectionDecision({...stored,version:'4'},reset,true)).toBe('conflict');
+  headers.delete('Blok-Doc-Reset');
+  expect(projectionDecision(stored,readProjectionHeaders(headers)!,true)).toBe('conflict');
+  headers.set('Blok-Doc-Reset','1');headers.set('Blok-Doc-Sequence','1');
+  expect(readProjectionHeaders(headers)).toBeUndefined();
+});

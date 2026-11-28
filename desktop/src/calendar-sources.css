@@ -1,0 +1,13 @@
+.cal-sources { font-size: 12px; display: grid; gap: 17px; }
+.cal-sources :is(h2, h3) { font-size: 11px; font-weight: 600; color: var(--muted-foreground, var(--desktop-muted, #777)); margin: 0 0 5px; }
+.cal-sources small { display: block; color: var(--muted-foreground, var(--desktop-muted, #777)); line-height: 1.4; }
+.cal-sources label { display: flex; align-items: center; gap: 6px; min-width: 0; padding-block: 3px; cursor: pointer; }
+.cal-sources label span { overflow-wrap: anywhere; }
+.cal-sources button { background: transparent; border: 0; color: inherit; text-align: start; cursor: pointer; padding: 4px 2px; font: inherit; }
+.cal-sources button:hover { text-decoration: underline; }
+.cal-layer-row { display: flex; align-items: center; justify-content: space-between; }
+.cal-sources form { display: grid; gap: 5px; }
+.cal-sources form input { min-width: 0; width: 100%; color: inherit; background: transparent; border: 1px solid var(--desktop-border,#aaa); border-radius: 4px; padding: 3px; }
+
+.cal-sources input[type="checkbox"] { accent-color: var(--cal-source-color); }
+[data-blok-theme="dark"] .cal-sources input[type="checkbox"] { accent-color: oklch(from var(--cal-source-color) 75% min(.2, calc(c * 3.5)) h); }

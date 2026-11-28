@@ -4,6 +4,9 @@ import { configure, fireEvent, getConfig, screen, waitFor, within } from '@testi
 import { Blok } from '../../../../../src/blok';
 import { getUserOS } from '../../../../../src/components/utils/browser';
 import { Paragraph } from '../../../../../src/tools/paragraph';
+import { CalloutTool } from '../../../../../src/tools/callout';
+import { ListItem } from '../../../../../src/tools/list';
+import { CodeTool } from '../../../../../src/tools/code';
 import type { BlokConfig, OutputData } from '../../../../../types';
 import type { AgentAssistantAction, AgentModel, AgentModelRequest, AgentModelResponse } from '../../../../../types/api';
 
@@ -12,6 +15,8 @@ interface TestEditor {
   destroy: () => void;
   save: () => Promise<OutputData>;
 }
+
+type ToolMap = NonNullable<BlokConfig['tools']>;
 
 const editors: TestEditor[] = [];
 
@@ -53,7 +58,7 @@ const texts = async (editor: TestEditor): Promise<string[]> =>
 
 const createEditor = async (
   model: AgentModel,
-  options: { text?: string; actions?: AgentAssistantAction[] } = {}
+  options: { text?: string; actions?: AgentAssistantAction[]; tools?: ToolMap } = {}
 ): Promise<TestEditor> => {
   const holder = document.createElement('div');
 
@@ -61,7 +66,7 @@ const createEditor = async (
 
   const config: BlokConfig = {
     holder,
-    tools: { paragraph: Paragraph },
+    tools: { paragraph: Paragraph, ...options.tools },
     data: { blocks: [{ id: 'p1', type: 'paragraph', data: { text: options.text ?? 'Hello world' } }] },
     agent: { assistant: { model, ...(options.actions === undefined ? {} : { actions: options.actions }) } },
   };
@@ -148,7 +153,7 @@ describe('Ask AI action buttons', () => {
     putCaret(paragraphInput());
     pressModJ(paragraphInput());
 
-    expect(labels()).toEqual(['Summarize', 'Find action items', 'Fix spelling and grammar', 'Continue writing']);
+    expect(labels()).toEqual(['Summarize', 'Find action items', 'Diagram', 'ASCII diagram', 'Fix spelling and grammar', 'Continue writing']);
 
     fireEvent.click(within(group()).getByRole('button', { name: 'Summarize' }));
 
@@ -162,7 +167,7 @@ describe('Ask AI action buttons', () => {
     pressModJ(paragraphInput());
 
     expect([...group().querySelectorAll('[data-blok-assistant-action-icon] > svg[data-blok-ask-ai-hue]')].map((hue) => hue.getAttribute('data-blok-ask-ai-act')))
-      .toEqual(['summarize', 'actionItems', 'proofread', 'continue']);
+      .toEqual(['summarize', 'actionItems', 'diagram', 'asciiDiagram', 'proofread', 'continue']);
   });
 
   it('offers edits of the selection when text is selected', async () => {
@@ -170,7 +175,7 @@ describe('Ask AI action buttons', () => {
     selectWord(paragraphInput());
     pressModJ(paragraphInput());
 
-    expect(labels()).toEqual(['Improve writing', 'Fix spelling and grammar', 'Make shorter', 'Make longer', 'Simplify language', 'Explain']);
+    expect(labels()).toEqual(['Improve writing', 'Fix spelling and grammar', 'Make shorter', 'Make longer', 'Simplify language', 'Explain', 'Diagram', 'ASCII diagram']);
   });
 
   it('offers no built-in actions on a page with no text', async () => {
@@ -190,11 +195,13 @@ describe('Ask AI action buttons', () => {
   });
 
   it('inserts an answer under the block as it reads, and Undo takes it out', async () => {
-    const editor = await createEditor(scripted(answer('The page greets the world.\n\nIt is short.')));
+    const editor = await createEditor(scripted(answer('The page greets the world.\n\nIt is short.')), {
+      actions: [{ label: 'Ask about it', prompt: 'What is this page about?' }],
+    });
 
     putCaret(paragraphInput());
     pressModJ(paragraphInput());
-    fireEvent.click(within(group()).getByRole('button', { name: 'Summarize' }));
+    fireEvent.click(within(group()).getByRole('button', { name: 'Ask about it' }));
 
     const insert = await waitFor(() => within(bar()).getByRole('button', { name: 'Insert' }));
 
@@ -210,11 +217,13 @@ describe('Ask AI action buttons', () => {
   });
 
   it('inserts the answer once when Insert is pressed twice in a row', async () => {
-    const editor = await createEditor(scripted(answer('The page greets the world.')));
+    const editor = await createEditor(scripted(answer('The page greets the world.')), {
+      actions: [{ label: 'Ask about it', prompt: 'What is this page about?' }],
+    });
 
     putCaret(paragraphInput());
     pressModJ(paragraphInput());
-    fireEvent.click(within(group()).getByRole('button', { name: 'Summarize' }));
+    fireEvent.click(within(group()).getByRole('button', { name: 'Ask about it' }));
 
     const insert = await waitFor(() => within(bar()).getByRole('button', { name: 'Insert' }));
 
@@ -223,5 +232,78 @@ describe('Ask AI action buttons', () => {
 
     await waitFor(() => expect(within(bar()).getByText('Added to the page.')).toBeTruthy());
     expect(await texts(editor)).toEqual(['Hello world', 'The page greets the world.']);
+  });
+
+  it('puts a summary at the top of the page, in a callout', async () => {
+    const editor = await createEditor(scripted(answer('The page greets the world.')), { tools: { callout: CalloutTool } });
+
+    putCaret(paragraphInput());
+    pressModJ(paragraphInput());
+    fireEvent.click(within(group()).getByRole('button', { name: 'Summarize' }));
+
+    fireEvent.click(await waitFor(() => within(bar()).getByRole('button', { name: 'Insert at top' })));
+
+    await waitFor(async () => {
+      const { blocks } = await editor.save();
+
+      expect(blocks.map((block) => block.type)).toEqual(['callout', 'paragraph', 'paragraph']);
+      // One body paragraph: a callout inserted without one seeds an empty line of its own.
+      expect(blocks[0]?.data.emoji).toBe('\u{1F4A1}');
+      expect(plain(blocks[1]?.data.text)).toBe('The page greets the world.');
+      expect(blocks[1]?.parent).toBe(blocks[0]?.id);
+      // The page the summary is about stays where it was, under the callout.
+      expect(plain(blocks[2]?.data.text)).toBe('Hello world');
+    });
+  });
+
+  it('puts the action items under the user\'s place, as boxes to tick off', async () => {
+    const editor = await createEditor(scripted(answer('- Call the plumber\n- Buy milk')), { tools: { list: ListItem } });
+
+    putCaret(paragraphInput());
+    pressModJ(paragraphInput());
+    fireEvent.click(within(group()).getByRole('button', { name: 'Find action items' }));
+
+    fireEvent.click(await waitFor(() => within(bar()).getByRole('button', { name: 'Insert' })));
+
+    await waitFor(async () => {
+      const { blocks } = await editor.save();
+
+      expect(blocks.map((block) => block.type)).toEqual(['paragraph', 'list', 'list']);
+      expect(blocks.slice(1).map((block) => block.data.style)).toEqual(['checklist', 'checklist']);
+      expect(blocks.slice(1).map((block) => block.data.checked)).toEqual([false, false]);
+      expect(blocks.slice(1).map((block) => plain(block.data.text))).toEqual(['Call the plumber', 'Buy milk']);
+    });
+  });
+
+  it('leaves a drawing in the action items alone: a fenced block is not a list', async () => {
+    const editor = await createEditor(scripted(answer('- Call the plumber\n\n```\n- not an item\n```')), {
+      tools: { list: ListItem, code: CodeTool },
+    });
+
+    putCaret(paragraphInput());
+    pressModJ(paragraphInput());
+    fireEvent.click(within(group()).getByRole('button', { name: 'Find action items' }));
+
+    fireEvent.click(await waitFor(() => within(bar()).getByRole('button', { name: 'Insert' })));
+
+    await waitFor(async () => {
+      const { blocks } = await editor.save();
+
+      expect(blocks.map((block) => block.type)).toEqual(['paragraph', 'list', 'code']);
+      expect(blocks[1]?.data.style).toBe('checklist');
+      expect(blocks[2]?.data.code).toBe('- not an item');
+    });
+  });
+
+  it('offers the plain Insert for a summary when the host ships no callout tool', async () => {
+    const editor = await createEditor(scripted(answer('The page greets the world.')));
+
+    putCaret(paragraphInput());
+    pressModJ(paragraphInput());
+    fireEvent.click(within(group()).getByRole('button', { name: 'Summarize' }));
+
+    fireEvent.click(await waitFor(() => within(bar()).getByRole('button', { name: 'Insert' })));
+
+    await waitFor(async () => expect(await texts(editor)).toEqual(['Hello world', 'The page greets the world.']));
   });
 });

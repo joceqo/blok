@@ -24,6 +24,7 @@ export interface PageRestore {
 export type DiscardOutcome = 'all' | 'partial' | 'none' | 'restored';
 
 export interface AgentRunDeps {
+  scope?: AbortSignal;
   turn: AgentTurn;
   model: AgentModel;
   maxSteps: number;
@@ -133,7 +134,15 @@ export function createAgentRun(prompt: string | Promise<string>, deps: AgentRunD
     return state.result;
   };
 
+  const leavePage = (): void => {
+    state.closed = true;
+    state.controller?.abort();
+    deps.turn.stop();
+  };
+  deps.scope?.addEventListener('abort', leavePage, {once: true});
   const end = (): void => {
+    deps.scope?.removeEventListener('abort', leavePage);
+    if (state.closed) return;
     state.closed = true;
     state.controller?.abort();
     deps.turn.end();
@@ -159,8 +168,10 @@ export function createAgentRun(prompt: string | Promise<string>, deps: AgentRunD
       state.controller?.abort();
     },
     discard: async () => {
+      if (deps.scope?.aborted) return false;
       state.controller?.abort();
       await state.result;
+      if (deps.scope?.aborted) return false;
 
       deps.sealSteps?.();
       const undone = { count: 0 };

@@ -1,0 +1,113 @@
+"use client";
+
+import {shellText} from '../../shell-i18n';
+import { NotepadText, X } from "lucide-react";
+
+import { cn } from "../lib/utils";
+import {
+  EVENT_DETAIL_HOVER_BORDER_CLASS,
+  EVENT_DETAIL_ICON_CLASS,
+  EVENT_DETAIL_MUTED_CLASS,
+  EVENT_DETAIL_PLACEHOLDER_CLASS,
+  EVENT_DETAIL_SECONDARY_CLASS,
+  EVENT_DETAIL_TEXT_CLASS,
+  EventDetailSection,
+  ROW_BOX_CLASS,
+} from "./event-detail-parts";
+import type {
+  DetailedCalendarEvent,
+  EventDetailSectionProps,
+} from "./week-view-types";
+
+/**
+ * AI meeting notes, as in Notion Calendar. Off: a muted "Add AI meeting
+ * notes" row, or, once the event has a call, Notion's full-width "Add
+ * meeting note" button (the panel shows it above the call; Notion's
+ * chevron menu is left out). On: "AI meeting notes" with a button that
+ * turns them off. Toggles `aiMeetingNotes`.
+ */
+export function EventDetailAiNotes<
+  TEvent extends DetailedCalendarEvent = DetailedCalendarEvent,
+>({ event, onEventChange }: EventDetailSectionProps<TEvent>) {
+  const setNotes = (on: boolean) => {
+    onEventChange?.({ ...event, aiMeetingNotes: on ? true : undefined });
+  };
+
+  if (event.aiMeetingNotes) {
+    return (
+      <EventDetailSection name="ai-notes">
+        <div className="flex min-h-[35px] items-center px-2">
+          <div className={cn("group/ai-notes", ROW_BOX_CLASS)}>
+            <NotepadText className={EVENT_DETAIL_ICON_CLASS} />
+            <span className={cn("flex-1 truncate", EVENT_DETAIL_TEXT_CLASS)}>
+              {shellText("AI meeting notes")}
+            </span>
+            {onEventChange && (
+              <button
+                type="button"
+                aria-label={shellText("Turn off AI meeting notes")}
+                title={shellText("Turn off AI meeting notes")}
+                className={cn(
+                  "flex size-5 shrink-0 items-center justify-center opacity-0 group-hover/ai-notes:opacity-100 focus-visible:opacity-100",
+                  EVENT_DETAIL_SECONDARY_CLASS,
+                )}
+                onClick={() => setNotes(false)}
+              >
+                <X className="size-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      </EventDetailSection>
+    );
+  }
+
+  if (event.conference) {
+    return (
+      <EventDetailSection name="ai-notes">
+        <div className="flex min-h-[35px] items-center px-2">
+          <button
+            type="button"
+            disabled={!onEventChange}
+            data-testid="event-ai-notes-button"
+            className={cn(
+              "flex h-8 flex-1 items-center rounded-md border border-calendar-detail-border bg-calendar-detail-focus/40 hover:bg-calendar-detail-focus dark:border-calendar-menu-border dark:bg-calendar-menu dark:hover:bg-calendar-menu-accent",
+              EVENT_DETAIL_TEXT_CLASS,
+            )}
+            onClick={() => setNotes(true)}
+          >
+            <span className="flex flex-1 items-center justify-center gap-1.5">
+              <NotepadText className="size-4" />
+              {shellText("Add meeting note")}
+            </span>
+          </button>
+        </div>
+      </EventDetailSection>
+    );
+  }
+
+  return (
+    <EventDetailSection name="ai-notes">
+      <div className="flex min-h-[35px] items-center px-2">
+        <button
+          type="button"
+          disabled={!onEventChange}
+          data-testid="event-ai-notes-button"
+          className={cn(
+            "text-left",
+            ROW_BOX_CLASS,
+            EVENT_DETAIL_HOVER_BORDER_CLASS,
+          )}
+          onClick={() => setNotes(true)}
+        >
+          <NotepadText
+            className={cn("size-4 shrink-0", EVENT_DETAIL_MUTED_CLASS)}
+          />
+          <span className={cn("truncate", EVENT_DETAIL_PLACEHOLDER_CLASS)}>
+            {shellText("Add AI meeting notes")}
+          </span>
+        </button>
+      </div>
+    </EventDetailSection>
+  );
+}

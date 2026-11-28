@@ -1,0 +1,22 @@
+[data-inbox-pane] [data-blok-notifications] > [data-notification-header] {
+  position: relative;
+  padding: 8px 10px 8px 12px;
+}
+[data-blok-notifications] [data-notification-header] > h2 { padding-inline: 6px; font-weight: 500; }
+[data-blok-notifications] [data-notification-header] > button { width: 28px; padding: 0; }
+[data-blok-notifications] [data-notification-header] button svg { width: 20px; height: 20px; }
+[data-notification-header] [data-filter-active] { color: #2383e2; }
+[data-inbox-menu] {
+  position: absolute; z-index: 2; inset-block-start: calc(100% - 5px); inset-inline-end: 10px;
+  min-width: 176px; padding: 4px; border-radius: 8px; border: 1px solid var(--desktop-border);
+  color: var(--desktop-ink); background: var(--desktop-canvas); box-shadow: 0 4px 16px #0003;
+}
+[data-blok-notifications] [data-inbox-menu] button {
+  display: flex; justify-content: flex-start; gap: 8px; width: 100%; padding: 4px 8px;
+  text-align: start; font-size: 13px; color: var(--desktop-ink);
+}
+[data-inbox-menu] [aria-pressed] span { margin-inline-start: auto; }
+[data-blok-notifications] [role=alert] button { margin-inline-start: 4px; text-decoration: underline; }
+@media (pointer: coarse) {
+  [data-blok-notifications] [data-notification-header] > button { width: 36px; }
+}

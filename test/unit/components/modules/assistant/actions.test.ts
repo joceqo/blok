@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { assistantActions } from '../../../../../src/components/modules/assistant/actions';
 
+import type { ActionContext, AssistantAction } from '../../../../../src/components/modules/assistant/actions';
+
 const t = (key: string): string => `<${key}>`;
+const actionOf = (context: ActionContext, id: string): AssistantAction | undefined =>
+  assistantActions(context, t).find((action) => action.label === t(`assistant.action.${id}`));
+const destinationOf = (context: ActionContext, id: string): string | undefined => actionOf(context, id)?.destination;
+const insertOf = (context: ActionContext, id: string): string | undefined => actionOf(context, id)?.insert;
 
 describe('assistantActions', () => {
   it('offers edits of the selected text when text is selected', () => {
@@ -15,6 +21,8 @@ describe('assistantActions', () => {
       '<assistant.action.longer>',
       '<assistant.action.simplify>',
       '<assistant.action.explain>',
+      '<assistant.action.diagram>',
+      '<assistant.action.asciiDiagram>',
     ]);
   });
 
@@ -24,6 +32,8 @@ describe('assistantActions', () => {
     expect(labels).toEqual([
       '<assistant.action.summarize>',
       '<assistant.action.actionItems>',
+      '<assistant.action.diagram>',
+      '<assistant.action.asciiDiagram>',
       '<assistant.action.proofread>',
       '<assistant.action.continue>',
     ]);
@@ -84,6 +94,42 @@ describe('assistantActions', () => {
     ];
 
     expect(assistantActions('caret', t, host).map((action) => action.icon)).toEqual(['<svg></svg>', undefined]);
+  });
+
+  it('tells the bar where each action\'s result goes', () => {
+    expect(destinationOf('selection', 'explain')).toBe('answer');
+    expect(destinationOf('selection', 'improve')).toBe('replaceSelection');
+    expect(destinationOf('caret', 'summarize')).toBe('answer');
+    expect(destinationOf('caret', 'continue')).toBe('document');
+  });
+
+  it('sends both diagram skills to a code block, wherever the bar opened', () => {
+    expect(destinationOf('selection', 'diagram')).toBe('codeBlock');
+    expect(destinationOf('caret', 'diagram')).toBe('codeBlock');
+    expect(destinationOf('selection', 'asciiDiagram')).toBe('codeBlock');
+    expect(destinationOf('caret', 'asciiDiagram')).toBe('codeBlock');
+  });
+
+  it('tells the bar which block each answer deserves: a summary heads the page, action items are ticked off', () => {
+    expect(insertOf('caret', 'summarize')).toBe('calloutAtTop');
+    expect(insertOf('caret', 'actionItems')).toBe('checklist');
+  });
+
+  it('leaves every other answer to the plain insert, the host\'s own actions included', () => {
+    expect(insertOf('selection', 'explain')).toBeUndefined();
+    expect(insertOf('caret', 'continue')).toBeUndefined();
+    expect(assistantActions('caret', t, [{ label: 'Title', prompt: 'Suggest a title.' }])[0]?.insert).toBeUndefined();
+  });
+
+  it('reads a destination per context: proofread swaps a selection, and edits the page at a caret', () => {
+    expect(destinationOf('selection', 'proofread')).toBe('replaceSelection');
+    expect(destinationOf('caret', 'proofread')).toBe('document');
+  });
+
+  it('leaves a host action without a destination: the host never said where its result goes', () => {
+    const [action] = assistantActions('caret', t, [{ label: 'Title', prompt: 'Suggest a title.' }]);
+
+    expect(action.destination).toBeUndefined();
   });
 
   it('hides every action for an empty host list', () => {

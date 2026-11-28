@@ -137,6 +137,8 @@ export type AgentModelStreamEvent =
 
 /** What the assistant sends to the host's model function. */
 export interface AgentModelRequest {
+  /** Inline raster images attached to the final user message. */
+  images?: string[];
   system: string;
   messages: AgentModelMessage[];
   tools: AgentModelTool[];
@@ -158,6 +160,8 @@ export interface AgentModelResponse {
 export type AgentModel = (request: AgentModelRequest) => Promise<AgentModelResponse>;
 
 export interface AgentAssistantConfig {
+  /** Called before capturing editor context. Throw to refuse a run, or abort to end it when the host leaves the page or loses edit access. */
+  scopeSignal?: () => AbortSignal;
   /** Calls the LLM. See `AgentModel`. */
   model: AgentModel;
   /** Shown on the agent caret and in announcements. Default "AI". */

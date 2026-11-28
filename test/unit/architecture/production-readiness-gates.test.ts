@@ -76,6 +76,7 @@ describe('production readiness gates', () => {
     const ci = workflow('.github/workflows/ci.yml');
     const readiness = job(ci, 'production-readiness');
     const required = [
+      'product-tests',
       'i18n',
       'lint',
       'workflow-lint',
@@ -96,7 +97,7 @@ describe('production readiness gates', () => {
       'visual-regression',
     ];
 
-    expect(readiness.if).toBe('always()');
+    expect(readiness.if).toBe('${{ !inputs.unit_only && always() }}');
     expect(new Set(needsList(readiness.needs))).toEqual(new Set(required));
     expect(readiness.steps?.some(step =>
       step.run?.includes('result !== \'success\'') === true
@@ -114,7 +115,8 @@ describe('production readiness gates', () => {
       expect(source).toContain('workflows: ["CI"]');
       expect(source).toContain('types: [completed]');
       expect(source).toContain('github.event.workflow_run.conclusion == \'success\'');
-      expect(source).toContain("github.event.workflow_run.event == 'push'");
+      expect(source).toContain("github.event.workflow_run.event == 'workflow_dispatch'");
+      expect(source).toContain("github.event.workflow_run.display_title == 'Release CI'");
       expect(source).toContain('github.event.workflow_run.head_repository.full_name == github.repository');
       expect(source).toContain('github.event.workflow_run.head_sha');
     }
@@ -123,7 +125,7 @@ describe('production readiness gates', () => {
     const mirror = workflow('.github/workflows/mirror.yml');
 
     for (const id of ['docs-tests', 'verify-release', 'build']) {
-      expect(job(docs, id).if).toContain("github.event.workflow_run.event == 'push'");
+      expect(job(docs, id).if).toContain("github.event.workflow_run.event == 'workflow_dispatch'");
       expect(job(docs, id).if).toContain(
         'github.event.workflow_run.head_repository.full_name == github.repository'
       );
@@ -131,7 +133,7 @@ describe('production readiness gates', () => {
 
     expect(Object.keys(mirror.on ?? {})).toEqual(['push', 'workflow_run']);
     expect(read('.github/workflows/mirror.yml')).toContain(
-      'gh run list --workflow CI --branch main --event push --commit "$GITHUB_SHA"'
+      'gh run list --workflow CI --branch main --event workflow_dispatch --commit "$GITHUB_SHA"'
     );
   });
 
@@ -151,13 +153,13 @@ describe('production readiness gates', () => {
     expect(mirror).toContain('git push mirror "+${{ github.event.workflow_run.head_sha }}:refs/heads/main"');
   });
 
-  it('accepts only main push CI runs for release publication', () => {
+  it('accepts only full CI runs on main for release publication', () => {
     for (const source of [
       read('scripts/release.mjs'),
       read('.github/workflows/mirror.yml'),
       read('.github/workflows/release-server.yml'),
     ]) {
-      expect(source).toContain('--branch main --event push');
+      expect(source).toContain('--branch main --event workflow_dispatch');
     }
   });
 

@@ -1,0 +1,32 @@
+{
+  "description": "Recorded HTTP responses for service-node with no database (createApp({ database: undefined })).",
+  "cases": [
+    {
+      "name": "GET /health",
+      "method": "GET",
+      "path": "/health",
+      "expect": {
+        "status": 200,
+        "body": {
+          "status": "ok",
+          "version": "0.0.0"
+        }
+      }
+    },
+    {
+      "name": "GET /api/instance (no DB)",
+      "method": "GET",
+      "path": "/api/instance",
+      "expect": {
+        "status": 200,
+        "body": {
+          "ready": false,
+          "database": false,
+          "sidecar": false,
+          "mailer": false,
+          "version": "0.0.0"
+        }
+      }
+    }
+  ]
+}

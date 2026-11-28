@@ -1,0 +1,39 @@
+{
+  "name": "@bloklabs/server-node",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Blok server host — Node implementation (Kestrel wire parity)",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "bin": {
+    "blok-server": "bin/blok-server.mjs"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "scripts": {
+    "journal:room": "node bin/blok-journal-room.mjs",
+    "journal:append": "node bin/blok-journal-append.mjs",
+    "journal:inspect": "node bin/journal-inspect.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "journal:export": "node bin/blok-journal-export.mjs",
+    "test:fast": "vitest run .fast.test.ts"
+  },
+  "devDependencies": {
+    "@types/busboy": "1.5.4",
+    "@types/ws": "8.18.1",
+    "vitest": "5.0.5",
+    "zod": "^4.1.12"
+  },
+  "dependencies": {
+    "busboy": "1.6.0",
+    "jsonc-parser": "3.3.1",
+    "lib0": "0.2.120",
+    "ws": "8.22.0",
+    "yjs": "13.6.33"
+  }
+}

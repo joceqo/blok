@@ -1,0 +1,9 @@
+[data-desktop-cover] [data-desktop-cover-gallery] { box-sizing: border-box; }
+[data-desktop-cover-grid] button:focus-visible {
+  outline: 2px solid var(--desktop-focus-ring);
+  outline-offset: 1px;
+}
+@media (hover: none) {
+  [data-desktop-cover] [data-desktop-cover-actions] { opacity: 1; }
+  [data-desktop-cover-actions] > button { min-height: 36px; }
+}

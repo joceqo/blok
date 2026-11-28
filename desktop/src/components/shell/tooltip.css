@@ -1,0 +1,17 @@
+.shell-tooltip-positioner {
+  z-index: 51;
+}
+.shell-tooltip {
+  border: 1px solid var(--blok-popover-border, var(--desktop-border));
+  border-radius: 6px;
+  padding: 4px 7px;
+  color: var(--blok-text-primary, var(--desktop-ink));
+  background: var(--blok-popover-bg, var(--desktop-strip));
+  box-shadow: var(--blok-popover-box-shadow);
+  font: 500 12px / 18px var(--blok-font-family, system-ui);
+}
+.shell-tooltip kbd {
+  margin-inline-start: 5px;
+  color: var(--blok-text-secondary, var(--desktop-muted));
+  font: inherit;
+}

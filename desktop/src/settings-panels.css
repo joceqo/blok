@@ -1,0 +1,52 @@
+.settings-panel [data-desktop-settings-title] { margin: 0 0 8px; font-size: 26px; line-height: 32px; letter-spacing: -.025em; }
+.settings-panel [data-desktop-settings-intro] { margin: 0 0 44px; color: var(--desktop-ink); font-size: 16px; line-height: 24px; }
+.settings-panel-section + .settings-panel-section { margin-top: 32px; }
+.settings-panel-section h2 { margin: 0; padding-bottom: 12px; border-bottom: 1px solid var(--desktop-border); font-size: 16px; font-weight: 600; line-height: 24px; }
+.settings-panel-row, .settings-panel-identity { display: flex; align-items: center; padding-block: 16px; gap: 14px; }
+.settings-panel-row { flex-wrap: wrap; justify-content: space-between; }
+.settings-panel-row > .settings-panel-label { flex: 1 1 190px; }
+.settings-panel-label { min-width: 0; display: grid; gap: 4px; }
+.settings-panel-label strong, .settings-panel-values dt { font-size: 14px; font-weight: 500; line-height: 20px; }
+.settings-panel-label small, .settings-panel-directory { color: var(--desktop-muted); font-size: 13px; line-height: 20px; }
+.settings-panel-label strong, .settings-panel-values dd { overflow-wrap: anywhere; }
+.settings-panel-avatar { flex: none; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%; color: var(--desktop-ink); background: var(--desktop-hover); box-shadow: inset 0 0 0 1px var(--desktop-border); font-size: 21px; font-weight: 500; }
+.settings-panel-identity input[data-blok-field] { width: 210px; max-width: 100%; box-sizing: border-box; }
+.settings-panel-values { margin: 0; }
+.settings-panel-values > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-block: 12px; }
+.settings-panel-values dd { min-width: 0; margin: 0; text-align: end; color: var(--desktop-muted); font-size: 14px; }
+.settings-panel [data-desktop-settings-copy] { margin-top: 0; }
+.settings-panel-directory code { display: block; margin-block: 7px 12px; overflow-wrap: anywhere; user-select: text; }
+.settings-panel-directory [role="status"] { margin-inline-start: 8px; }
+
+.settings-panel [data-desktop-settings-version] { margin: 12px 0 0; font-size: 13px; }
+
+.settings-panel [data-desktop-choice] { border-radius: 6px; font-size: 14px; font-weight: 500; }
+
+
+html[data-desktop-high-contrast] body :is([data-desktop-shell], [data-desktop-settings-overlay], [data-cloud-gateway], [data-blok-interface], [data-blok-popover], [data-blok-top-layer]) {
+  --desktop-muted: color-mix(in srgb, var(--desktop-ink) 88%, var(--desktop-canvas));
+  --desktop-border: color-mix(in srgb, var(--desktop-ink) 56%, var(--desktop-canvas));
+  --desktop-hover: color-mix(in srgb, var(--desktop-ink) 17%, var(--desktop-canvas));
+  --blok-text-secondary: var(--desktop-muted);
+  --blok-menu-section-label: var(--desktop-muted);
+  --blok-popover-border: var(--desktop-border);
+  --blok-item-hover-bg: var(--desktop-hover);
+}
+html[data-desktop-high-contrast] .settings-panel-switch { outline: 1px solid var(--desktop-ink); }
+html[data-desktop-high-contrast] .settings-panel-switch:focus-visible { outline-width: 2px; }
+
+[data-desktop-menu-context] { font-size: 12px; color: var(--desktop-muted); }
+.settings-calendar-sources { margin: 0 0 24px; gap: 24px; font-size: 14px; }
+.settings-calendar-sources h3 { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--desktop-border); color: var(--desktop-ink); font-size: 16px; font-weight: 600; }
+.settings-calendar-sources small { font-size: 13px; }
+
+
+.settings-notification-status { margin: 0; padding-block: 4px; font-size: 13px; line-height: 20px; color: var(--desktop-muted); }
+.settings-panel-switch:disabled { opacity: .5; cursor: default; }
+
+/* Une rangée empilée : l'intitulé, son explication, puis le contrôle dessous
+   sur sa propre ligne. C'est la forme des réglages qui portent une saisie,
+   là où `.settings-panel-row` convient aux interrupteurs et aux listes. */
+.settings-panel-stack { display: grid; justify-items: start; gap: 10px; padding-block: 16px; }
+.settings-panel-stack input[data-blok-field] { width: 100%; max-width: 580px; box-sizing: border-box; }
+.settings-panel-icon { font-size: 34px; }

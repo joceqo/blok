@@ -211,6 +211,20 @@ describe('CI critical-path law', () => {
     });
   });
 
+  it('selects product units on push and PR and reserves expensive jobs for full CI', () => {
+    const product = readWorkflow('.github/workflows/product.yml');
+    const full = readWorkflow('.github/workflows/ci.yml');
+
+    expect(Object.keys(product.on ?? {}).sort()).toEqual(['pull_request', 'push', 'workflow_dispatch']);
+    expect(product.jobs.checks.uses).toBe('./.github/workflows/ci.yml');
+    expect(product.jobs.checks.with?.unit_only).toBe(true);
+    expect(Object.keys(full.on ?? {}).sort()).toEqual(['workflow_call', 'workflow_dispatch']);
+    for (const id of ['unit-tests', 'build', 'install-browsers', 'server', 'server-delivery', 'validate-spec-coverage', 'storybook-tests']) {
+      expect(full.jobs[id].if).toBe('${{ !inputs.unit_only }}');
+    }
+    expect(full.jobs['product-tests'].steps?.at(-1)?.run).toBe('npm test');
+  });
+
   it('bounds every job, so a hung one cannot hold the concurrency group for six hours', () => {
     const unbounded = [
       ...Object.entries(ci.jobs)
@@ -291,6 +305,7 @@ describe('CI critical-path law', () => {
       // 20-job cap, and after TypeScript, whose globs would sweep target/.
       {
         name: 'Cache Rust release build',
+        if: '${{ !inputs.unit_only }}',
         uses: 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
         with: {
           path: ['~/.cargo/registry', '~/.cargo/git', 'packages/server/rust/target', ''].join('\n'),
@@ -300,6 +315,7 @@ describe('CI critical-path law', () => {
       },
       {
         name: 'Setup Go',
+        if: '${{ !inputs.unit_only }}',
         uses: 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e',
         with: {
           'go-version-file': 'packages/server/go/go.mod',
@@ -308,10 +324,12 @@ describe('CI critical-path law', () => {
       },
       {
         name: 'Test Rust conformance',
+        if: '${{ !inputs.unit_only }}',
         run: 'node scripts/test-server-conformance.mjs --target rust',
       },
       {
         name: 'Test journal interop between Go and Rust',
+        if: '${{ !inputs.unit_only }}',
         run: 'node scripts/test-server-conformance.mjs --target interop-rust',
       },
     ]);
@@ -438,7 +456,7 @@ describe('CI critical-path law', () => {
 
     expect(mcp.name).toBe('MCP Conformance (${{ matrix.part }})');
     expect(mcp.needs).toEqual(['server']);
-    expect(mcp.if).toBe('${{ !cancelled() }}');
+    expect(mcp.if).toBe('${{ !inputs.unit_only && !cancelled() }}');
     expect(mcp['runs-on']).toBe('ubuntu-latest');
     expect(mcp['timeout-minutes']).toBe(10);
     expect(mcp.strategy?.['fail-fast']).toBe(false);
@@ -555,6 +573,7 @@ describe('CI critical-path law', () => {
       },
       {
         name: 'Test Go server with coverage',
+        if: '${{ !inputs.unit_only }}',
         'working-directory': 'packages/server/go',
         run: [
           'go test -p 2 -covermode=atomic -coverprofile="$RUNNER_TEMP/go-coverage.out" ./...',
@@ -564,7 +583,32 @@ describe('CI critical-path law', () => {
       },
       {
         name: 'Test Go module consumer and release build',
+        if: '${{ !inputs.unit_only }}',
         run: 'node scripts/test-server-go-module.mjs',
+      },
+      // apps/service had no gate at all: its existing tests ran nowhere. Its
+      // PostgreSQL is started inside the step rather than as a job `services:`
+      // container, so it is not attached to the other steps of this job.
+      {
+        name: 'Test cloud service',
+        if: '${{ !inputs.unit_only }}',
+        'working-directory': 'apps/service',
+        run: [
+          'docker run -d --name cloud-test-pg \\',
+          '  -e POSTGRES_PASSWORD=password -e POSTGRES_DB=blok_test \\',
+          '  -p 5432:5432 postgres:17-alpine',
+          'for _ in $(seq 1 30); do',
+          '  docker exec cloud-test-pg pg_isready -U postgres >/dev/null 2>&1 && break',
+          '  sleep 1',
+          'done',
+          'unformatted="$(gofmt -l .)"',
+          'if [ -n "$unformatted" ]; then',
+          '  echo "$unformatted"',
+          '  exit 1',
+          'fi',
+          'go vet ./...',
+          "TEST_DATABASE_URL='postgres://postgres:password@127.0.0.1:5432/blok_test?sslmode=disable' go test ./...",
+        ].join('\n'),
       },
     ]);
   });
@@ -816,6 +860,10 @@ describe('CI critical-path law', () => {
         name: 'Test Go conformance',
         run: 'node scripts/test-server-conformance.mjs --target go',
       },
+      {
+        name: 'Test service-node',
+        run: 'cd apps/service-node && npm ci && npm test',
+      },
     ]);
 
     expect(build.name).toBe('Build');
@@ -917,7 +965,7 @@ describe('CI critical-path law', () => {
 
     expect(merge.name).toBe('Merge E2E Reports');
     expect(merge.if).toBe(
-      "${{ !cancelled() && github.ref != 'refs/heads/main' }}",
+      "${{ !inputs.unit_only && !cancelled() && github.ref != 'refs/heads/main' }}",
     );
     expect(merge.needs).toEqual(['e2e-tests']);
     expect(merge['runs-on']).toBe('ubuntu-latest');

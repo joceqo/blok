@@ -1,0 +1,666 @@
+import { createHash, randomBytes } from 'node:crypto';
+import * as decoding from 'lib0/decoding';
+import { WebSocket, type RawData } from 'ws';
+import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
+import { decode, encode } from '../../../../../../src/components/modules/collaboration/sync-wire.ts';
+import type { SyncWireFrame } from '../../../../../../src/components/modules/collaboration/types.ts';
+import { historyRequest, type HistoryRequest } from './history.ts';
+import { writeRecordNote } from './record-notes.ts';
+import { RoomPresence } from './presence.ts';
+import { exportPage, seedUpdate } from './page-document.ts';
+import { preparePageStorage, type PageStorage } from './page-storage.ts';
+import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
+import { sweepHeartbeat, type HeartbeatMember } from './heartbeat.ts';
+import { createAccessCache } from './access-cache.ts';
+import { applyWorkingSet, CURRENT_FORMAT, encodeFrames, newLineage } from './working-set.ts';
+import { EditRefused, EditTooLarge } from '../edit/apply.ts';
+
+import type { RoomIdentity, RoomOptions } from './preview.ts';
+
+interface Peer extends HeartbeatMember { ws: WebSocket; ticket: string; admission: RoomIdentity; synced: boolean;
+  badAwareness: number; reportedMalformed: boolean }
+
+/**
+ * A frame that reached the socket before the room attached its own listener.
+ * `ws` buffers nothing, so whoever answered the handshake has to hold what the
+ * client sent in the meantime and hand it over here.
+ */
+export interface PendingFrame { data: RawData; binary: boolean }
+
+/** Protocol section 6.1 and scenario S4 fix this text, not only the 4503 code. */
+const COMMIT_UNAVAILABLE_REASON = 'commit unavailable, retry';
+
+/** Probe period. A half-open socket is dropped between one and two of these. */
+const HEARTBEAT_MS = 30_000;
+
+/**
+ * How long a commit waits for the next one before the consumer's record is
+ * written back. Typing is many commits and one record, so the pause is what
+ * keeps a page of typing from becoming a page of PUTs.
+ */
+const EXPORT_DEBOUNCE_MS = 2_000;
+
+/**
+ * And the other half of it: a room edited without pause never reaches the
+ * quiet the debounce waits for, so the record is written back at least this
+ * often while it is behind.
+ */
+const EXPORT_MAX_DELAY_MS = 10_000;
+
+/** Longest a refused write-back waits before it is tried again. */
+const EXPORT_MAX_BACKOFF_MS = 30_000;
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The most clients one awareness frame may claim. Go keeps the cap as a room
+ * option and reads it in the ROOM rather than in its validator, because only
+ * the room can act on the difference: a frame past the cap is dropped and
+ * forgotten, while a frame that will not parse is held against its sender.
+ * It must not exceed the presence reader's own ceiling — the member tests
+ * pin it to that ceiling from both sides.
+ */
+const MAX_AWARENESS_CLIENTS = 128;
+
+/** Malformed awareness frames from one member before the room expels it. */
+const MALFORMED_AWARENESS_LIMIT = 3;
+
+/** How many clients an awareness update claims, before any of it is read. */
+function claimedClients(update: Uint8Array): number {
+  try { return decoding.readVarUint(decoding.createDecoder(update)); }
+  catch { return 0; }
+}
+
+/**
+ * What an awareness frame the presence reader refused costs its sender. Past
+ * the cap the frame is dropped and nothing is held against the member — too
+ * many clients is not nonsense — and anything else is its own fault, the
+ * third one being its last.
+ */
+function refuseAwareness(peer: Peer, update: Uint8Array): void {
+  if (claimedClients(update) > MAX_AWARENESS_CLIENTS) return;
+  peer.badAwareness += 1;
+  if (peer.badAwareness >= MALFORMED_AWARENESS_LIMIT) peer.ws.close(1008,'malformed awareness');
+}
+
+/**
+ * Floor under an authorization answer. The push on `/internal/room/recheck-access`
+ * is the authority on a permission change and invalidates immediately; this only
+ * bounds a change that was never pushed.
+ */
+const ACCESS_TTL_MS = 2_000;
+type Operation = Extract<SyncWireFrame, { type:'operation' }>;
+
+/** What `POST /sync/{doc}/edit` carries. Its digest covers the command, not the update. */
+export interface EditCommand {
+  operationId: string;
+  digest: Uint8Array;
+  update: Uint8Array;
+  /**
+   * Turns operations into an update against the LIVE document, for a door that
+   * carries operations rather than a prebuilt update: an insert placed after a
+   * block resolves against the state the room holds at admission time, not
+   * against whatever the caller last saw. When present it replaces `update`.
+   */
+  build?: (doc: Doc) => Uint8Array;
+  expected?: { lineage: string; sequence: bigint };
+}
+
+export type EditOutcome =
+  | { ok: true; lineage: string; sequence: bigint }
+  | { ok: false; reason: 'forbidden' | 'conflict' | 'invalid' | 'too-large'; message?: string }
+  | { ok: false; reason: 'precondition'; lineage: string; sequence: bigint };
+
+/** What the admission rules decided, before a transport words it. */
+type Verdict =
+  | { kind: 'too-large' | 'conflict' | 'precondition' | 'invalid' }
+  | { kind: 'settled'; sequence: bigint }
+  | { kind: 'commit'; data?: Record<string, unknown> };
+
+function send(peer: Peer, frame: SyncWireFrame) {
+  if (peer.ws.readyState !== WebSocket.OPEN) return;
+  if (peer.ws.bufferedAmount > 4 * MAX_APPEND_BYTES) { peer.ws.close(1008, 'outbound queue overflow'); return; }
+  peer.ws.send(encode(frame));
+}
+
+function classifyUpdate(doc: Doc, update: Uint8Array, project?: PageStorage['validate']) {
+  const probe = new Doc();
+  try {
+    applyUpdate(probe, encodeStateAsUpdate(doc));
+    let changed = false;
+    probe.on('update', () => { changed = true; });
+    applyUpdate(probe, update);
+    if (probe.store.pendingStructs !== null || probe.store.pendingDs !== null) return { kind:'invalid' } as const;
+    return {kind:changed ? 'changed' : 'unchanged', data:project?.(probe)} as const;
+  } catch { return {kind:'invalid'} as const; }
+  finally { probe.destroy(); }
+}
+
+/**
+ * The update an edit command carries, built against the live document when it
+ * brought a builder. A builder that throws names no edit, so it is refused —
+ * never a reason to take the room down. A field past the HTML cap is the one
+ * refusal that is about size rather than sense, and the door words it as one.
+ */
+function updateFor(doc: Doc, command: EditCommand):
+    { update: Uint8Array } | { refusal: string; reason: 'invalid' | 'too-large' } {
+  if (!command.build) return { update: command.update };
+  try { return { update: command.build(doc) }; }
+  // Only a refusal names its reason; anything else is a fault, and a fault
+  // explains nothing a caller could act on.
+  catch (error) {
+    if (!(error instanceof EditRefused)) return { refusal: '', reason: 'invalid' };
+    return { refusal: error.message, reason: error instanceof EditTooLarge ? 'too-large' : 'invalid' };
+  }
+}
+
+/** Own the journal lease while this document is loaded. */
+export async function openDocumentRoom(options: RoomOptions) {
+  const { documentId, allowedOrigins, authorize } = options;
+  if (!documentId || !allowedOrigins.size) throw new Error('A document ID and allowed origins are required');
+  const storage = options.projection && await preparePageStorage(options.directory, documentId, options.projection.origin, options.projection.secret);
+  /**
+   * Where this room's commits live. A host that named a working set gets a
+   * room with NO journal: Go's law is that the two are never the same room
+   * (`TestOperationStoreRoomNeverWritesTheWorkingSetStore`), and a journal
+   * beside the store would be a second authority on the same document.
+   */
+  const record = options.workingSets === undefined
+    ? { kind: 'journal' as const, writer: await acquireJournalWriter(storage?.directory ?? options.directory) }
+    : { kind: 'working-set' as const, store: options.workingSets };
+  const doc = new Doc();
+  const operations = new Map<string, { digest:Buffer; sequence:bigint }>();
+  const peers = new Set<Peer>();
+  const presence = new RoomPresence<Peer>();
+  const access = createAccessCache<Peer, RoomIdentity | null>({ ttlMs: ACCESS_TTL_MS });
+  let queue = Promise.resolve();
+  let stopping = false;
+  let pendingBytes = 0;
+  let pendingFrames = 0;
+  let closing: Promise<void> | undefined;
+  let sweeping = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let keepalive: ReturnType<typeof setInterval> | undefined;
+  /**
+   * The write-back a closing room still owes, and the timer it was waiting on.
+   * Both are assigned once the room is open: before that there is no committed
+   * document to project, so nothing can be owed.
+   */
+  let flushExport: () => Promise<void> = async () => {};
+  let exportTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function principal(peer: Peer): Promise<RoomIdentity | null> {
+    let identity: RoomIdentity | null;
+    try {
+      identity = await access.resolve(peer, () =>
+        peer.admission.revalidate ? peer.admission.revalidate() : authorize(peer.ticket, documentId));
+    }
+    catch { identity = null; }
+    if (identity?.id === peer.admission.id && identity.workspaceId === peer.admission.workspaceId &&
+        peer.ws.readyState === WebSocket.OPEN) return identity;
+    if (peer.ws.readyState === WebSocket.OPEN) peer.ws.close(4403, 'forbidden');
+    return null;
+  }
+  function stop(reason?: {code:number;message:string}) {
+    if (closing) return closing;
+    stopping = true;
+    clearInterval(timer);
+    clearInterval(keepalive);
+    clearTimeout(exportTimer);
+    for (const peer of peers) {
+      if (reason) peer.ws.close(reason.code,reason.message); else peer.ws.terminate();
+    }
+    closing = (async () => {
+      await queue;
+      // The last edit of a closing room has nowhere else to go: the next open
+      // reads the journal back, and the consumer's record never would.
+      await flushExport();
+      if (record.kind === 'journal') await record.writer.close();
+      doc.destroy();
+    })();
+    return closing;
+  }
+  try {
+    let tag: { format: number; epoch: number; lineage: string };
+    /**
+     * The sequence this room has committed through. A working-set room counts
+     * from zero on every open: the store keeps the document and the lineage,
+     * never a per-edit history, so there is no earlier sequence to resume —
+     * which is why Go's working-set room reports no sequence to the endpoint
+     * at all.
+     */
+    let head: bigint;
+    if (record.kind === 'journal') {
+      const { manifest, journal } = await record.writer.recover(frame => applyUpdate(doc,frame.update), r => {
+        operations.set(r.operationId, {digest:Buffer.from(r.digest),sequence:r.sequence});
+      });
+      if (manifest.format !== 2 || manifest.epoch < 0n || manifest.epoch > BigInt(Number.MAX_SAFE_INTEGER) ||
+          doc.store.pendingStructs !== null || doc.store.pendingDs !== null) throw new Error('Room needs an intact seeded format-2 journal');
+      tag = { format:manifest.format, epoch:Number(manifest.epoch), lineage:manifest.lineage };
+      head = journal.durableThrough;
+    } else {
+      // What the last room published IS this room's past: its tag is the one
+      // the clients have to keep seeing, so a restart does not read as a reset.
+      const stored = await record.store.read(documentId);
+      if (stored === undefined) {
+        applyUpdate(doc, await (options.workingSetSeed?.() ?? Promise.resolve(seedUpdate(null))));
+        tag = { format:CURRENT_FORMAT, epoch:0, lineage:newLineage() };
+      } else {
+        if (stored.tag.epoch > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Room needs a readable working-set epoch');
+        applyWorkingSet(doc, stored.updates);
+        tag = { format:stored.tag.format, epoch:Number(stored.tag.epoch), lineage:stored.tag.lineage };
+      }
+      if (tag.format !== CURRENT_FORMAT) throw new Error('Room needs an intact format-2 working set');
+      head = 0n;
+    }
+    await storage?.attach(doc,tag.lineage,head);
+
+    const debounceMs = options.exportDebounceMs ?? EXPORT_DEBOUNCE_MS;
+    /** The consumer's record is behind the document, and by how long it has been. */
+    let exportDirty = false;
+    let dirtySince = 0;
+    let exportFailures = 0;
+    /** Earliest the next write-back may go out, after one was refused. */
+    let exportRetryAt = 0;
+    /** The write-back in flight. Single flight: edits meanwhile ride the next one. */
+    let exporting: Promise<void> | undefined;
+    /** A document the projection cannot represent, said once rather than per edit. */
+    let unprojectable = false;
+
+    function oweExport() {
+      exportDirty = true;
+      if (dirtySince === 0) dirtySince = Date.now();
+    }
+
+    function markExportDirty() {
+      if (!options.onExport || stopping) return;
+      oweExport();
+      scheduleExport();
+    }
+
+    function scheduleExport() {
+      if (!exportDirty || stopping || exportTimer !== undefined || exporting !== undefined) return;
+      const now = Date.now();
+      const due = Math.max(Math.min(now + debounceMs, dirtySince + EXPORT_MAX_DELAY_MS), exportRetryAt);
+      exportTimer = setTimeout(() => { exportTimer = undefined; void runExport(); }, Math.max(0, due - now));
+      exportTimer.unref();
+    }
+
+    /** The document as of one committed state, with the generation it was taken from. */
+    function projectNow() {
+      return { projection: exportPage(doc,options.exportExtra ?? {}), at: {lineage:tag.lineage, sequence:head} };
+    }
+
+    /**
+     * One write-back. The projection is taken ON the queue, so it is never a
+     * half-applied document; the write itself runs off it, so an endpoint that
+     * takes a second delays the next write-back and not the next edit.
+     */
+    async function runExport(): Promise<void> {
+      const save = options.onExport;
+      if (!save || stopping || exporting || !exportDirty) return;
+      const taken = queue.then(() => {
+        if (stopping || !exportDirty) return undefined;
+        // Spent here, not after the write: an edit arriving while the write is
+        // in flight is owed a write-back of its own, not folded into this one.
+        exportDirty = false;
+        dirtySince = 0;
+        return projectNow();
+      });
+      queue = taken.then(()=>{},()=>{});
+      let retry = false;
+      exporting = (async () => {
+        let state: Awaited<typeof taken>;
+        try { state = await taken; }
+        catch (error) {
+          // The document cannot be projected at all, and no amount of retrying
+          // changes that. It stays owed, and the next commit is what tries again.
+          oweExport();
+          if (!unprojectable) {
+            unprojectable = true;
+            console.warn(`Could not project document "${documentId}" for its record: ${reasonOf(error)}`);
+          }
+          return;
+        }
+        if (!state) return;
+        try {
+          await save(state.projection,state.at);
+          exportFailures = 0;
+          exportRetryAt = 0;
+          unprojectable = false;
+        } catch (error) {
+          oweExport();
+          exportFailures += 1;
+          exportRetryAt = Date.now() + Math.min(EXPORT_MAX_BACKOFF_MS, 1_000 * 2 ** (exportFailures - 1));
+          retry = true;
+          console.warn(`Could not write document "${documentId}" back to its record, retrying: ${reasonOf(error)}`);
+        }
+      })();
+      try { await exporting; } finally { exporting = undefined; }
+      if (retry || exportDirty) scheduleExport();
+    }
+
+    flushExport = async () => {
+      // The write already in flight carries an older state and lands first; a
+      // failure of its own is what leaves this one still owed.
+      await exporting?.catch(()=>{});
+      const save = options.onExport;
+      if (!save || !exportDirty) return;
+      exportDirty = false;
+      try { const state = projectNow(); await save(state.projection,state.at); }
+      catch (error) { console.warn(`Could not write closing document "${documentId}" back to its record: ${reasonOf(error)}`); }
+    };
+
+    async function operation(peer: Peer, identity: RoomIdentity, op: Operation) {
+      const { lineage, operationId, update } = op;
+      const reject = (code: string) => send(peer,{type:'rejection',lineage,operationId,code});
+      const ack = (sequence: bigint) => send(peer,{type:'acknowledgement',lineage,operationId,serverSequence:String(sequence)});
+      if (!identity.write) return reject('read-only');
+      if (!peer.synced) return reject('not-synced');
+      if (tag.lineage !== lineage) return reject('lineage-mismatch');
+      const digest = createHash('sha256').update(update).digest();
+      const verdict = admit(operationId,digest,update);
+      if (verdict.kind === 'settled') return ack(verdict.sequence);
+      if (verdict.kind === 'too-large') return reject('oversized-update');
+      if (verdict.kind === 'conflict') return reject('operation-id-conflict');
+      if (verdict.kind !== 'commit') return reject('invalid-update');
+      try {
+        await commit(identity,operationId,digest,update,0,verdict.data);
+        if (await principal(peer)) ack(head);
+      } catch { /* commit has already closed this room */ }
+    }
+
+    /**
+     * What a key already spent answers, or nothing when it is fresh. Read on
+     * its own because the HTTP door must consult it BEFORE building anything:
+     * rebuilding a retried insert would refuse the very block it created, and
+     * every retry would earn a refusal instead of its receipt.
+     */
+    function recorded(operationId:string, digest:Buffer): Verdict | undefined {
+      const previous = operations.get(operationId);
+      if (!previous) return undefined;
+      return digest.equals(previous.digest) ? {kind:'settled',sequence:previous.sequence} : {kind:'conflict'};
+    }
+
+    /**
+     * Section 12: the rules an edit is admitted by, shared between the socket and
+     * `POST /sync/{doc}/edit` so the two doors cannot drift. A key that already
+     * committed answers its own receipt before any precondition is read (12.2).
+     * Write permission is not among them: each door refuses in its own words,
+     * and at its own point in the order.
+     */
+    function admit(operationId:string, digest:Buffer, update:Uint8Array,
+        expected?:{lineage:string;sequence:bigint}): Verdict {
+      if (update.length > MAX_APPEND_BYTES) return {kind:'too-large'};
+      const spent = recorded(operationId,digest);
+      if (spent) return spent;
+      if (expected && (expected.lineage !== tag.lineage || expected.sequence !== head)) return {kind:'precondition'};
+      const candidate = classifyUpdate(doc,update,storage?.validate);
+      if (candidate.kind === 'invalid') return {kind:'invalid'};
+      // An edit that changes nothing records nothing, so its key stays spendable.
+      if (candidate.kind === 'unchanged' && head > 0n) return {kind:'settled',sequence:head};
+      return {kind:'commit',data:candidate.data};
+    }
+
+    /**
+     * `POST /sync/{doc}/edit`. Serialised on the queue the socket uses, so no
+     * frame can move the head between the admission and the append.
+     */
+    function apply(command: EditCommand, admission: RoomIdentity, token: string): Promise<EditOutcome> {
+      const result = queue.then(async (): Promise<EditOutcome> => {
+        if (stopping) throw new Error('Closing room');
+        const who = admission.revalidate ? await admission.revalidate() : await authorize(token,documentId);
+        if (!who || who.id !== admission.id || who.workspaceId !== admission.workspaceId ||
+            !who.write || !admission.write) return {ok:false,reason:'forbidden'};
+        const digest = Buffer.from(command.digest);
+        const spent = recorded(command.operationId,digest);
+        if (spent?.kind === 'settled') return {ok:true,lineage:tag.lineage,sequence:spent.sequence};
+        if (spent) return {ok:false,reason:'conflict'};
+        const built = updateFor(doc,command);
+        if ('refusal' in built) return {ok:false,reason:built.reason,message:built.refusal || undefined};
+        const update = built.update;
+        const verdict = admit(command.operationId,digest,update,command.expected);
+        if (verdict.kind === 'settled') return {ok:true,lineage:tag.lineage,sequence:verdict.sequence};
+        if (verdict.kind === 'precondition') return {ok:false,reason:'precondition',lineage:tag.lineage,sequence:head};
+        if (verdict.kind !== 'commit') return {ok:false,reason:verdict.kind};
+        const sequence = await commit(who,command.operationId,digest,update,2,verdict.data);
+        return {ok:true,lineage:tag.lineage,sequence};
+      });
+      queue = result.then(()=>{},()=>{});
+      return result;
+    }
+
+    async function commit(identity: RoomIdentity, operationId:string, digest:Buffer, update:Uint8Array, source:0|1|2,
+        data?:Record<string,unknown>, except?:Peer) {
+      try {
+        if (record.kind === 'journal') {
+          const receipt = await record.writer.append({ expectedLineage:tag.lineage, expectedThrough:head, operationId,
+            update, actorId:identity.actorId ?? identity.id, source, digest });
+          if (receipt.outcome !== 'committed') throw new Error('Held journal changed');
+          head = receipt.sequence;
+          // A note is auxiliary metadata. Its failure must never discard or reject a durable edit.
+          if (identity.actorId || identity.id) {
+            await writeRecordNote(storage?.directory ?? options.directory, tag.lineage, head, operationId,
+              identity.recordNote ?? {kind:'person'}).catch(() => console.warn('Could not persist collaboration record note'));
+          }
+          if (storage && data) await storage.publish(head,data);
+          applyUpdate(doc,update);
+        } else {
+          // Applied first, and published as the WHOLE document rather than as
+          // this update: the room that reads it back has no journal behind it
+          // to complete a delta from. The write is awaited before the member
+          // is acknowledged, because here the store is the only durability
+          // there is — an ack the bucket never took would be an edit lost on
+          // the next open, with nothing said.
+          applyUpdate(doc,update);
+          head += 1n;
+          await record.store.write(documentId, encodeFrames([encodeStateAsUpdate(doc)]),
+            { format:tag.format, epoch:BigInt(tag.epoch), lineage:tag.lineage });
+          if (storage && data) await storage.publish(head,data);
+        }
+        operations.set(operationId,{digest,sequence:head});
+        // Relayed to every other member, synced or not: Go's broadcast puts no
+        // such condition on it, and a member that stopped reading never syncs
+        // — so a sync condition is also what hides a stalled consumer.
+        await Promise.all([...peers].map(async member => {
+          if (member!==except && await principal(member)) send(member,{type:'update',update});
+        }));
+        markExportDirty();
+        return head;
+      } catch (error) {
+        // Nothing in RAM can be used as evidence of a commit after storage failure.
+        stopping = true;
+        for (const member of peers) member.ws.close(4503, COMMIT_UNAVAILABLE_REASON);
+        clearInterval(timer);
+        clearInterval(keepalive);
+        // Reopen from disk only after the old room releases its lease.
+        setImmediate(() => { void stop().catch(() => {}); });
+        throw error;
+      }
+    }
+
+    function history(request: HistoryRequest, admission:RoomIdentity, token:string) {
+      const result = queue.then(async () => {
+        if (stopping) throw new Error('Closing room');
+        const who = admission.revalidate ? await admission.revalidate() : await authorize(token,documentId);
+        if (!who || who.id !== admission.id || who.workspaceId !== admission.workspaceId ||
+            (request.method !== 'GET' && (!who.write || !admission.write))) return {status:403};
+        return historyRequest({directory:storage?.directory ?? options.directory,doc,tag,head,request,
+          recordNotes:options.recordNotes,
+          enforceRestoreGuards:options.enforceRestoreGuards,
+          restoreTrashesPages:options.restoreTrashesPages,
+          // What a trashed page is stamped as trashed BY. The contract spells
+          // nobody as null, never as the empty string a missing id reads as.
+          actorId:(who.actorId ?? who.id) || null,
+          project:storage?.validate,operations,commit:async (id,digest,update) => {
+            const candidate = classifyUpdate(doc,update,storage?.validate);
+            if (candidate.kind === 'invalid') throw new Error('Invalid restore');
+            return commit(who,id,digest,update,2,candidate.data);
+          }});
+      });
+      queue = result.then(()=>{},()=>{});
+      return result;
+    }
+
+    /**
+     * Go relays presence through `broadcastLocked`, which puts no sync
+     * condition on the receiver: a member still reading the document can
+     * already paint carets, and a sync condition is also what would hide a
+     * member whose outbound queue has stalled.
+     */
+    async function broadcastPresence(frame: SyncWireFrame, except: Peer) {
+      const identities = presence.identities();
+      await Promise.all([...peers].map(async member => {
+        if (!await principal(member)) return;
+        send(member,identities);
+        if (member !== except) send(member,frame);
+      }));
+    }
+
+    async function receive(peer: Peer, payload: Uint8Array) {
+      const identity = await principal(peer);
+      if (!identity || stopping) return;
+      const frame = decode(payload);
+      switch (frame.type) {
+        // Relayed whether or not this member has synced: Go routes an
+        // awareness frame with no such condition, and a frame dropped before
+        // it is read is a frame its sender is never answerable for.
+        case 'awareness': {
+          let update;
+          // The same actor the journal records: an admission naming no
+          // separate actor is acting as the account it signed in with. Reading
+          // `actorId` alone leaves every member of a ticket host anonymous, and
+          // frame 107 then names nobody at all.
+          try { update = presence.receive(peer,identity.actorId ?? identity.id,frame.update); }
+          catch { refuseAwareness(peer,frame.update); break; }
+          if (update) await broadcastPresence(update,peer);
+          break;
+        }
+        case 'queryAwareness': {
+          const snapshot = presence.snapshot();
+          if (peer.synced && snapshot) { send(peer,presence.identities()); send(peer,snapshot); }
+          break;
+        }
+        case 'operation': if (peer.ws.protocol==='blok-sync.v2') await operation(peer,identity,frame); break;
+        case 'syncStep1': {
+          let update;
+          try { update = encodeStateAsUpdate(doc,frame.stateVector); } catch { return; }
+          send(peer,{type:'syncStep2',update});
+          send(peer,{type:'syncStep1',stateVector:encodeStateVector(doc)});
+          peer.synced = true;
+          break;
+        }
+        // Section 10: an outer type this version does not know is ACCEPTED AND
+        // IGNORED, never refused — a newer peer must not lose its session over it.
+        case 'unknown': break;
+        // Section 5 leaves the disposition of a malformed frame to the implementation:
+        // the only closes it fixes are the 1008 of section 7 and the 4503 of section 6.1,
+        // and the close table of section 2 names none for an undecodable frame. So the
+        // room never acts on it, keeps the socket — section 9 still owes a v1 or stock
+        // y-websocket reader its session — and says so once, since the reason can carry
+        // bytes the sender chose and a flood must not become a flood of logs.
+        case 'malformed': {
+          if (!peer.reportedMalformed) {
+            peer.reportedMalformed = true;
+            console.warn(`Ignored a malformed collaboration frame: ${frame.reason.slice(0,120)}`);
+          }
+          break;
+        }
+        case 'syncStep2':
+        case 'update': {
+          if (peer.ws.protocol==='blok-sync.v2') { peer.ws.close(1008,'raw write on a v2 session'); break; }
+          // Write permission and the message cap, and nothing else: Go gates a
+          // v1 write on CanWrite alone, never on whether the sender has synced.
+          if (!identity.write || frame.update.length>MAX_APPEND_BYTES) break;
+          const update=frame.update;
+          const candidate=classifyUpdate(doc,update,storage?.validate);
+          if (candidate.kind==='changed') await commit(identity,randomBytes(16).toString('hex'),
+            createHash('sha256').update(update).digest(),update,1,candidate.data,peer);
+          break;
+        }
+      }
+    }
+
+    function enqueue(peer: Peer, data: RawData, binary: boolean) {
+      // Two different refusals shared one reason: a stopping room is not a protocol
+      // error, and 1003 told the peer its own frame was at fault. The transport
+      // contract fixes the wording for the real one.
+      if (stopping) { peer.ws.close(4503,'room unavailable'); return; }
+      if (!binary) { peer.ws.close(1003,'binary frames only'); return; }
+      const bytes = Array.isArray(data) ? Buffer.concat(data) : data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+      if (pendingFrames >= 128 || pendingBytes + bytes.length > 8 * MAX_APPEND_BYTES) {
+        peer.ws.close(1008,'room queue overflow'); return;
+      }
+      pendingFrames++;
+      pendingBytes += bytes.length;
+      queue = queue.then(async () => {
+        try { await receive(peer,bytes); }
+        catch { peer.ws.close(1011,'room error'); }
+        finally { pendingFrames--; pendingBytes -= bytes.length; }
+      });
+    }
+
+    function connect(ws: WebSocket, ticket: string, identity: RoomIdentity, pending: readonly PendingFrame[] = []) {
+      if (stopping) { ws.close(4503, 'room unavailable'); return; }
+      const peer: Peer = {ws,ticket,admission:identity,synced:false,badAwareness:0,reportedMalformed:false,alive:true,
+        ping:() => ws.ping(), terminate:() => ws.terminate()};
+      peers.add(peer);
+      ws.on('pong', () => { peer.alive = true; });
+      ws.on('error', () => ws.terminate());
+      ws.on('close', () => {
+        peers.delete(peer);
+        access.invalidate(peer);
+        queue = queue.then(async () => {
+          const removed = presence.leave(peer);
+          if (removed && !stopping) await broadcastPresence(removed,peer);
+        }).catch(() => {});
+      });
+      ws.on('message', (data,binary) => enqueue(peer,data,binary));
+      // What arrived during the handshake gap, in the order the client wrote it
+      // and through the one path that keeps the queue and its counters honest.
+      for (const frame of pending) enqueue(peer,frame.data,frame.binary);
+      // Section 10: a peer that negotiated no sub-protocol speaks plain
+      // y-websocket and has no reader for either frame.
+      if (ws.protocol !== '') {
+        send(peer,{type:'control',tag});
+        send(peer,{type:'limits',maxMessageBytes:MAX_APPEND_BYTES});
+      }
+      // Sent even when empty, so a reconnect overwrites the stale map the
+      // client still holds. The members already here are then asked to
+      // announce themselves again: no y-websocket client sends
+      // queryAwareness of its own, so without this a late joiner never
+      // learns that the peers before it exist.
+      send(peer,presence.identities());
+      for (const member of peers) if (member !== peer) send(member,{type:'queryAwareness'});
+    }
+
+    function recheck() {
+      const checked = queue.then(async () => {
+        if (stopping) throw new Error('Room is stopping');
+        access.invalidate();
+        await Promise.all(Array.from(peers, principal));
+      });
+      queue = checked.catch(() => {});
+      return checked;
+    }
+
+    timer = setInterval(async () => {
+      if (sweeping || stopping) return;
+      sweeping = true;
+      try { await Promise.all(Array.from(peers, principal)); } finally { sweeping = false; }
+    }, 1000);
+    timer.unref();
+    keepalive = setInterval(() => {
+      if (stopping) return;
+      // A copy: terminate() closes the socket, and the close handler leaves `peers`.
+      sweepHeartbeat([...peers]);
+    }, HEARTBEAT_MS);
+    keepalive.unref();
+    return { connect, apply, history, recheck, close: stop, available: () => !stopping };
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+}

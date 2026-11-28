@@ -41,6 +41,19 @@ describe('lazy stylesheets', () => {
     document.head.innerHTML = '';
   });
 
+  it('shares the database stylesheet between a standalone grid and the first editor', async () => {
+    const { loadHostSheet, mountStyles } = await lazyStyles();
+    await Promise.all([loadHostSheet('database'), loadHostSheet('database')]);
+    const standalone = document.querySelectorAll('[data-blok-host-sheet="database"]');
+    expect(standalone).toHaveLength(1);
+    expect(standalone[0].textContent).toContain('.db{}');
+    mountStyles('[data-blok-sheet=database]{--blok-sheet:database}', undefined);
+    expect(document.head.contains(standalone[0])).toBe(false);
+    expect(sheetText()).toContain('.db{}');
+    await loadHostSheet('database');
+    expect(document.querySelector('[data-blok-host-sheet]')).toBeNull();
+  });
+
   it('mounts one #blok-styles first in head, with the nonce', async () => {
     const { mountStyles } = await lazyStyles();
     const host = document.createElement('style');

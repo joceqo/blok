@@ -1,0 +1,76 @@
+/* The ordinary block supplies page persistence. Its sibling projection supplies the board UI. */
+[data-blok-redactor] [data-blok-component="whiteboardElement"] { display: none; }
+
+.blok-board-element {
+  position: relative;
+  display: grid;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--desktop-ink, CanvasText);
+  font: 500 16px/1.4 system-ui, sans-serif;
+}
+.blok-board-element > span { position: relative; overflow: hidden; max-height: 100%; }
+.blok-board-element > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.blok-board-element[data-board-element=note] {
+  align-items: center;
+  text-align: center;
+  padding: 16px;
+  border-radius: 3px;
+  background-color: var(--board-element-color, #ffed9e);
+  color: var(--board-label-color, #342d16);
+  box-shadow: 0 2px 3px #24160020;
+}
+.blok-board-element:is([data-board-element=rectangle], [data-board-element=ellipse], [data-board-element=diamond]) {
+  padding: 8px;
+  text-align: center;
+  --board-shape-color: var(--board-element-color, transparent);
+  --board-shape-fill: var(--board-element-color, #fcd34d);
+  color: var(--board-label-color, #342d16);
+}
+.blok-board-element[data-board-default-shape] {
+  --board-shape-fill: #fcd34d;
+  color: #342d16;
+}
+.blok-board-element:is([data-board-element=rectangle], [data-board-element=ellipse]) {
+  border: 2px solid var(--board-shape-color);
+  background-color: var(--board-shape-fill);
+}
+.blok-board-element[data-board-element=rectangle] { border-radius: 5px; }
+.blok-board-element[data-board-element=ellipse] { border-radius: 50%; padding: 10%; }
+.blok-board-element[data-board-element=diamond] { padding: 10% 20%; }
+.blok-board-element[data-board-element=diamond] polygon {
+  stroke: var(--board-shape-color);
+  stroke-width: 2;
+  fill: var(--board-shape-fill);
+}
+.blok-board-element[data-board-element=frame] {
+  align-items: start;
+  padding: 8px;
+  color: var(--board-element-color, #8592a3);
+  font-size: 13px;
+}
+.blok-board-element:is([data-board-element=frame], [data-board-element=arrow], [data-board-element=pen]) { pointer-events: none; }
+.blok-board-element[data-board-element=frame] > span { justify-self: start; pointer-events: auto; }
+.blok-board-element[data-board-element=text] { align-items: start; color: var(--board-element-color, var(--desktop-ink, CanvasText)); }
+.blok-board-element:is([data-board-element=pen], [data-board-element=arrow]) { color: var(--board-element-color, var(--desktop-ink, CanvasText)); }
+.blok-board-element[data-board-element=link] {
+  padding: 8px 12px;
+  overflow: hidden;
+  border: 1px solid var(--desktop-border, #b0bfcb);
+  border-radius: 6px;
+  background-color: var(--desktop-canvas, Canvas);
+  color: var(--board-element-color, LinkText);
+}
+.blok-board-element a { color: inherit; text-underline-offset: 0.18em; }
+
+.blok-board-element[data-board-element=image] > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}

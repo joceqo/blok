@@ -1,0 +1,11 @@
+VOTRE CODE DE CONNEXION
+
+Saisissez ce code pour vous connecter. Il expire dans dix minutes.
+
+{{code}}
+
+Si vous n’avez pas demandé ce code, ignorez cet e-mail : personne ne peut se connecter sans lui.
+
+----------------------------------------
+
+{{publicURL}}

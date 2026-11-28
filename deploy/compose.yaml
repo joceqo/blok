@@ -1,0 +1,130 @@
+name: blok-cloud
+services:
+  postgres:
+    image: ${BLOK_POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: blok
+      POSTGRES_USER: blok
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U blok -d blok']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  app:
+    image: ${APP_IMAGE:-blok-cloud-app:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: service
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 90s
+    environment:
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+      GOOGLE_CALENDAR_REDIRECT_URI: ${GOOGLE_CALENDAR_REDIRECT_URI:-}
+      PUBLIC_URL: https://${DOMAIN:?Set DOMAIN}
+      PORT: '8081'
+      DATA_DIRECTORY: /data
+      BLOK_NODE_ROOM_ALL: '1'
+      MCP_SYNC_URL: ws://127.0.0.1:18102/api/blok/sync
+      DATABASE_URL: postgres://blok:${POSTGRES_PASSWORD}@postgres:5432/blok
+      TICKET_SECRET: ${TICKET_SECRET:?Set TICKET_SECRET}
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?Set INTERNAL_SECRET}
+      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost}
+      MAILER_HOST: ${MAILER_HOST:-${SMTP_HOST:-}}
+      MAILER_PORT: ${MAILER_PORT:-${SMTP_PORT:-587}}
+      MAILER_USER: ${MAILER_USER:-${SMTP_USERNAME:-}}
+      MAILER_PASSWORD: ${MAILER_PASSWORD:-${SMTP_PASSWORD:-}}
+      MAILER_FROM_EMAIL: ${MAILER_FROM_EMAIL:-}
+      MAILER_FROM_NAME: ${MAILER_FROM_NAME:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_WORKSPACE_SLUG: ${BOOTSTRAP_WORKSPACE_SLUG:-}
+      BOOTSTRAP_WORKSPACE_NAME: ${BOOTSTRAP_WORKSPACE_NAME:-}
+      TRUSTED_PROXY_CIDRS: ${CADDY_IP:-172.30.87.3}/32
+    volumes:
+      - state:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8081/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 4s
+      retries: 35
+  room:
+    image: ${APP_IMAGE:-blok-cloud-app:local}
+    pull_policy: never
+    network_mode: service:app
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 90s
+    command: ["/room/bin/blok-journal-room.mjs", "/data/collab", "--all", "https://${DOMAIN:?Set DOMAIN}", "18102"]
+    environment:
+      BLOK_ROOM_LISTEN_HOST: 0.0.0.0
+      BLOK_ROOM_CLOUD_ORIGIN: http://127.0.0.1:8081
+      BLOK_ROOM_PROJECTION_ORIGIN: http://127.0.0.1:8081
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?Set INTERNAL_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost}
+    volumes:
+      - state:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:18102/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 4s
+      retries: 35
+  media:
+    image: ${APP_IMAGE:-blok-cloud-app:local}
+    pull_policy: never
+    network_mode: service:app
+    init: true
+    restart: unless-stopped
+    command: ["/room/bin/blok-server.mjs", "--listen", "127.0.0.1:18103", "--auth", "ticket", "--public-url", "https://${DOMAIN:?Set DOMAIN}/files", "--allow-origin", "https://${DOMAIN:?Set DOMAIN}", "--storage-dir", "/data/uploads", "--rate-limit", "600"]
+    environment:
+      BLOK_SECRET: ${TICKET_SECRET:?Set TICKET_SECRET}
+    volumes:
+      - state:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:18103/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 4s
+      retries: 35
+  web:
+    image: ${WEB_IMAGE:-blok-cloud-web:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: ${CADDY_IP:-172.30.87.3}
+    ports:
+      - '127.0.0.1:18088:80'
+    depends_on:
+      room:
+        condition: service_healthy
+      media:
+        condition: service_healthy
+volumes:
+  postgres:
+  state:
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${BLOK_NETWORK_SUBNET:-172.30.87.0/24}
+          ip_range: ${BLOK_NETWORK_DYNAMIC_RANGE:-172.30.87.128/25}

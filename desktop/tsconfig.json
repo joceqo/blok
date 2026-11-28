@@ -1,0 +1,54 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "jsx": "react-jsx",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "paths": {
+      "@calendarcn-local/*": ["./src/calendarcn/*"],
+      "@bloklabs/core/full": [
+        "../types/full.d.ts"
+      ],
+      "@bloklabs/core/view": [
+        "../types/view.d.ts"
+      ],
+      "@bloklabs/core/tools": [
+        "../types/tools-entry.d.ts"
+      ],
+      "@blok/page-table": ["../types/tools/page-table.d.ts"],
+      "@blok/sidebar": [
+        "./src/sidebar-contract.d.ts"
+      ],
+      "@blok/page-sheet": ["./src/page-sheet-contract.d.ts"],
+      "@blok/date-editor": [
+        "./src/date-editor-contract.d.ts"
+      ],
+      "@blok/modal-dialog": [
+        "./src/modal-dialog-contract.d.ts"
+      ],
+      "@blok/popover": [
+        "./src/popover-contract.d.ts"
+      ],
+      "@blok/agent-assistant": [
+        "./src/agent-assistant-contract.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}

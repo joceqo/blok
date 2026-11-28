@@ -1,4 +1,5 @@
 import path from 'path';
+import { scopeCalendarCss } from '../desktop/scripts/scope-calendar-css.mjs';
 import { fileURLToPath } from 'url';
 import tailwindcss from '@tailwindcss/vite';
 import type { StorybookConfig } from '@storybook/html-vite';
@@ -23,16 +24,24 @@ const PLUGINS_TO_REMOVE = new Set([
 ]);
 
 const config: StorybookConfig = {
-  stories: ['../src/**/*.stories.@(js|jsx|mjs|ts|tsx)'],
+  stories: [
+    '../src/**/*.stories.@(js|jsx|mjs|ts|tsx)',
+    '../desktop/src/sidebar/stories/*.stories.tsx',
+    '../desktop/src/top-bar/stories/*.stories.tsx',
+    '../desktop/src/components/shell/stories/*.stories.tsx',
+    '../desktop/src/calendarcn/components/ui/*.stories.tsx',
+  ],
   staticDirs: [{ from: './fonts', to: '/fonts' }],
   addons: [
     '@storybook/addon-a11y',
-    '@storybook/addon-vitest'
+    '@storybook/addon-vitest',
+    'storybook-addon-react-grab',
   ],
   framework: '@storybook/html-vite',
   viteFinal: async (viteConfig) => {
     const updatedConfig: InlineConfig = {
       ...viteConfig,
+      css: { ...viteConfig.css, postcss: { plugins: [scopeCalendarCss] } },
       build: {
         ...viteConfig.build,
         // Disable module preload polyfill to prevent CSS preload errors in Chromatic
@@ -42,9 +51,16 @@ const config: StorybookConfig = {
       },
       resolve: {
         ...viteConfig.resolve,
+        dedupe: [...new Set([...(viteConfig.resolve?.dedupe ?? []), 'react', 'react-dom'])],
         alias: {
           ...viteConfig.resolve?.alias,
+          '@calendarcn-local': path.resolve(__dirname, '../desktop/src/calendarcn'),
           '@/types': path.resolve(__dirname, '../types'),
+          '@blok/sidebar': path.resolve(__dirname, '../src/shell/sidebar.ts'),
+          '@blok/page-table': path.resolve(__dirname, '../src/tools/database/page-table.ts'),
+          '@blok/page-sheet': path.resolve(__dirname, '../src/tools/database/host-page-sheet.ts'),
+          '@blok/modal-dialog': path.resolve(__dirname, '../src/components/utils/modal-dialog.ts'),
+          '@blok/popover': path.resolve(__dirname, '../src/components/utils/popover/popover-desktop.ts'),
         },
       },
       // Strip incompatible plugins (nested arrays are flattened first so each
