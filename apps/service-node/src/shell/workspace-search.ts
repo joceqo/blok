@@ -1,3 +1,5 @@
+import {readWorkspaceDatabases} from './workspace-databases.ts';
+import {DatabaseInputError} from './database-reader.ts';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PgPool } from '../db/pool.ts';
@@ -11,6 +13,25 @@ import { embedQuestion, mergeHits, semanticHits, type SearchHit, type createEmbe
 
 export function createWorkspaceSearch(pool: PgPool, embed?: ReturnType<typeof createEmbeddings>) {
   const router = new Hono();
+  router.post('/databases', bodyLimit({maxSize:16384}), async c => {
+    const token=sessionDigest(c);
+    if (!token) return c.json({error:'Sign in required'},401);
+    const input=await c.req.json().catch(()=>null);
+    if (input?.action!=='list' && input?.action!=='query') return c.json({error:'Action inconnue'},400);
+    const db=await pool.connect();
+    try {
+      await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const scope=await readWorkspaceScope(db,token,c.req.param('slug')!,false);
+      const result=await readWorkspaceDatabases(db,scope.workspace_id,scope.user_id,scope.role,input.action,input);
+      await db.query('COMMIT');
+      return c.json(result);
+    } catch (e) {
+      await db.query('ROLLBACK');
+      if (e instanceof WorkspaceError) return c.json({error:e.message},e.status);
+      if (e instanceof DatabaseInputError) return c.json({error:e.message},400);
+      throw e;
+    } finally {db.release();}
+  });
   router.post('/', bodyLimit({ maxSize: 8192, onError: c => c.json({ error: 'Question trop longue' }, 413) }), async c => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);

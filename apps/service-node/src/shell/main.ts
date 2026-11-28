@@ -6,7 +6,7 @@ import { serve } from '@hono/node-server';
 import { createPool } from '../db/pool.ts';
 import { createShellApp } from './app.ts';
 
-import { createEmbeddings, startEmbeddingWorker } from './embeddings.ts';
+import { createEmbeddings, PROJECTION, startEmbeddingWorker } from './embeddings.ts';
 import { ensureVectorIndex } from './vector-index.ts';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -24,7 +24,7 @@ if (deviceCredential(process.env.BLOK_DEVICE_SESSION_SECRET)) {
   await inTransaction(pool, ensureDeviceAccount);
 }
 const master = await loadAiKey(pool, process.env.DATA_DIRECTORY ?? './data', process.env.AI_ENCRYPTION_KEY);
-const embed = await ensureVectorIndex(pool) ? createEmbeddings(master,fetch,pool) : undefined;
+const embed = await ensureVectorIndex(pool, PROJECTION) ? createEmbeddings(master,fetch,pool) : undefined;
 const stopEmbeddings = embed && startEmbeddingWorker(pool,embed);
 const app = createShellApp(pool, process.env.INTERNAL_SECRET ?? '', origins, undefined, undefined, embed);
 const stopPurgeRetries = startPurgeRetries(pool, roomPurger(process.env.INTERNAL_SECRET!));

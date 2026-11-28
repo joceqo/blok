@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PROJECTION } from './embeddings.ts';
 import { ensureVectorIndex } from './vector-index.ts';
 
 // Une base avec pgvector : sans elle, rien à prouver sur le chemin nominal.
@@ -23,20 +24,20 @@ describe.skipIf(!databaseUrl)('ensureVectorIndex', () => {
   });
 
   it('creates the chunk table when the extension is there, and says so', async () => {
-    expect(await ensureVectorIndex(db)).toBe(true);
+    expect(await ensureVectorIndex(db, PROJECTION)).toBe(true);
 
     const { rows } = await db.query<{ column_name: string }>(
       'SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 ORDER BY column_name',
       [schema, 'page_chunks'],
     );
     expect(rows.map(row => row.column_name)).toEqual(
-      ['block_ids', 'chunk_index', 'created_at', 'embedding', 'id', 'model', 'page_id', 'page_version', 'text', 'workspace_id'],
+      ['block_ids', 'chunk_index', 'created_at', 'digest', 'embedding', 'id', 'model', 'page_id', 'page_version', 'text', 'workspace_id'],
     );
   });
 
   it('runs twice without complaining, since every start calls it', async () => {
-    expect(await ensureVectorIndex(db)).toBe(true);
-    expect(await ensureVectorIndex(db)).toBe(true);
+    expect(await ensureVectorIndex(db, PROJECTION)).toBe(true);
+    expect(await ensureVectorIndex(db, PROJECTION)).toBe(true);
   });
 
   it('reports the index as unavailable rather than throwing when the extension is missing', async () => {

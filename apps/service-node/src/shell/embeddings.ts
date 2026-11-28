@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
 import { openAiKey } from './ai-crypto.ts';
@@ -11,7 +11,13 @@ import { readWorkspaceScope } from './workspace-scope.ts';
 import { recordAiUsage } from './ai-usage.ts';
 
 const MODEL = 'text-embedding-3-small';
-const PROFILE = MODEL + ':1536:v1';
+/**
+ * The recipe, not just the model: the version moves whenever the text sent to the model changes,
+ * because a page built the old way answers questions the new way would answer differently.
+ * v2 reads a row's columns by name, carries each chunk's trail and section, and names a cited page.
+ */
+export const PROJECTION = MODEL + ':1536:v2';
+const PROFILE = PROJECTION;
 const BATCH_SIZE = 32;
 // Calibrated for this model on French workspace questions. Rank alone always returns a neighbour.
 const MIN_COSINE_SIMILARITY = 0.4;
@@ -102,10 +108,12 @@ export async function indexNextPage(pool: PgPool, embed: Embed, signal: AbortSig
   try {
     // One snapshot for the page and the trail of pages above it.
     const { rows, above } = await inTransaction(pool, async (db) => {
-      const blocks = await db.query<BlockText & { title: string; label: string | null; parentId: string | null }>(
+      const blocks = await db.query<
+        BlockText & { title: string; label: string | null; parentId: string | null; ord: string }
+      >(
       `
       SELECT parts.block_id AS "blockId",coalesce(parts.body,'') AS body,coalesce(p.metadata->>'title','') AS title,
-        parts.block_type AS type,parts.label,parts.parent_id AS "parentId"
+        parts.block_type AS type,parts.label,parts.parent_id AS "parentId",coalesce(parts.ord,0) AS ord
       FROM pages p LEFT JOIN LATERAL ${pageBlockText} parts ON true
       WHERE p.id=$1 AND NOT p.trashed AND NOT p.deleted ORDER BY parts.ord`,
       [job.page_id],
@@ -122,7 +130,43 @@ export async function indexNextPage(pool: PgPool, embed: Embed, signal: AbortSig
       [job.page_id],
       );
 
-      return { rows: blocks.rows, above: trail.rows };
+      // A page link holds an id and nothing else, so a page citing "Procédure de départ" kept no
+      // trace of that phrase. Name the cited page — but only when every reader of this page can
+      // read it too. Each reader is a member of the workspace (readWorkspaceScope requires it),
+      // and a page whose visibility resolves to `workspace` is readable by every member. A private
+      // page is not: its title must never travel inside someone else's chunk, which is the same
+      // line the editor draws when PageLink falls back to its `no-access` state.
+      const links = await db.query<{ blockId: string | null; ord: string; target: string }>(
+        `SELECT b->>'id' AS "blockId", ord, b->'data'->>'pageId' AS target
+         FROM pages p, jsonb_array_elements(CASE WHEN jsonb_typeof(p.content->'blocks')='array'
+           THEN p.content->'blocks' ELSE '[]' END) WITH ORDINALITY AS blocks(b,ord)
+         WHERE p.id=$1 AND coalesce(b->'data'->>'pageId','')<>''`,
+        [job.page_id],
+      );
+      const named = links.rows.length
+        ? await db.query<{ id: string; title: string }>(
+            // Visibility is inherited, so walk up to the nearest page that states one.
+            `WITH RECURSIVE up(root,parent,visibility,depth) AS (
+              SELECT p.id,p.metadata->>'parentId',p.visibility,0 FROM pages p
+                WHERE p.id=ANY($1::text[]) AND p.workspace_id=$2 AND NOT p.trashed AND NOT p.deleted
+              UNION ALL
+              SELECT u.root,p.metadata->>'parentId',p.visibility,u.depth+1 FROM up u
+                JOIN pages p ON p.id=u.parent AND p.workspace_id=$2 AND NOT p.deleted
+                WHERE u.visibility='inherit' AND u.depth<64
+            ) SELECT DISTINCT ON (up.root) up.root AS id, coalesce(t.metadata->>'title','') AS title
+              FROM up JOIN pages t ON t.id=up.root
+              WHERE up.visibility='workspace' ORDER BY up.root, up.depth`,
+            [[...new Set(links.rows.map((link) => link.target))], job.workspace_id],
+          )
+        : { rows: [] };
+      const titles = new Map(named.rows.map((row) => [row.id, row.title.trim()]));
+      const cited = links.rows.flatMap((link) => {
+        const title = titles.get(link.target) ?? '';
+
+        return title === '' ? [] : [{ ...link, body: title, type: 'page-link', title: '', label: null, parentId: null }];
+      });
+
+      return { rows: [...blocks.rows, ...cited].sort((a, b) => Number(a.ord) - Number(b.ord)), above: trail.rows };
     });
     // A row names the database that holds it, as AFFiNE's `additional.databaseName` does.
     const named = new Map(
@@ -134,8 +178,25 @@ export async function indexNextPage(pool: PgPool, embed: Embed, signal: AbortSig
     );
     const title = rows[0]?.title.trim().slice(0, 500) ?? '';
     if (!chunks.length && title) chunks.push({ index: 0, text: title, blockIds: [], context: '' });
-    const vectors: number[][] = [];
-    for (let start = 0; start < chunks.length; start += BATCH_SIZE) {
+    // The context is embedded with the chunk and stored apart from it: the vector knows where the
+    // passage comes from, the reader is still shown the words that were written.
+    const inputs = chunks.map((chunk) =>
+      chunk.context && chunk.context !== chunk.text ? chunk.context + '\n' + chunk.text : chunk.text,
+    );
+    // The fingerprint of what was sent, so a page is re-read without being re-paid for. Editing
+    // one paragraph of a long page changes one passage; everything else is word for word what the
+    // model already answered. Renaming an ancestor does change them all — the trail is in the
+    // text — and that is the honest price of the trail being there.
+    const prints = inputs.map((input) => createHash('sha256').update(input).digest('base64'));
+    const { rows: kept } = await pool.query<{ digest: string; vec: string }>(
+      `SELECT DISTINCT ON (digest) digest, embedding::text AS vec FROM page_chunks
+       WHERE page_id=$1 AND model=$2 AND embedding IS NOT NULL AND digest=ANY($3::text[])`,
+      [job.page_id, PROFILE, prints],
+    );
+    const known = new Map(kept.map((row) => [row.digest, row.vec]));
+    const vectors: (number[] | string)[] = Array.from(prints, (print) => known.get(print) ?? '');
+    const missing = prints.flatMap((print, index) => (known.has(print) ? [] : [index]));
+    for (let start = 0; start < missing.length; start += BATCH_SIZE) {
       signal.throwIfAborted();
       // A new projection, purge, credential removal or expired lease supersedes the job.
       const valid = await pool.query(
@@ -145,12 +206,11 @@ export async function indexNextPage(pool: PgPool, embed: Embed, signal: AbortSig
         [job.page_id, lease, job.workspace_id, job.encrypted_key],
       );
       if (!valid.rowCount) return true;
-      // The context is embedded with the chunk and stored apart from it: the vector knows where
-      // the passage comes from, the reader is still shown the words that were written.
-      const inputs = chunks
-        .slice(start, start + BATCH_SIZE)
-        .map((chunk) => (chunk.context && chunk.context !== chunk.text ? chunk.context + '\n' + chunk.text : chunk.text));
-      vectors.push(...(await embed(job, inputs, signal, 'index')));
+      const batch = missing.slice(start, start + BATCH_SIZE);
+      const fresh = await embed(job, batch.map((index) => inputs[index] ?? ''), signal, 'index');
+      batch.forEach((index, seat) => {
+        vectors[index] = fresh[seat] ?? [];
+      });
     }
     await inTransaction(pool, async (db) => {
       // Lock in the same order as the page trigger. Never publish a stale worker's result.
@@ -160,9 +220,9 @@ export async function indexNextPage(pool: PgPool, embed: Embed, signal: AbortSig
       );
       if (!page.rowCount) return;
       const done = await db.query(
-        `UPDATE page_embedding_jobs SET due_at=NULL,lease=NULL,attempts=0
+        `UPDATE page_embedding_jobs SET due_at=NULL,lease=NULL,attempts=0,model=$5
         WHERE page_id=$1 AND lease=$2 AND EXISTS(SELECT FROM ai_credentials k WHERE k.owner_id=$3 AND ${enabledKey} AND k.encrypted_key=$4)`,
-        [job.page_id, lease, job.workspace_id, job.encrypted_key],
+        [job.page_id, lease, job.workspace_id, job.encrypted_key, PROFILE],
       );
       if (!done.rowCount) return;
       await db.query('DELETE FROM page_chunks WHERE page_id=$1 AND model=$2', [job.page_id, PROFILE]);
@@ -172,12 +232,13 @@ export async function indexNextPage(pool: PgPool, embed: Embed, signal: AbortSig
           idx: chunk.index,
           body: chunk.text,
           blocks: chunk.blockIds,
-          vec: JSON.stringify(vectors[chunk.index]),
+          print: prints[chunk.index] ?? '',
+          vec: typeof vectors[chunk.index] === 'string' ? vectors[chunk.index] : JSON.stringify(vectors[chunk.index]),
         }));
         await db.query(
-          `INSERT INTO page_chunks(id,page_id,workspace_id,chunk_index,text,block_ids,embedding,model,page_version)
-          SELECT id,$1,$2,idx,body,blocks,vec::vector,$3,$4 FROM
-          jsonb_to_recordset($5) AS x(id text,idx int,body text,blocks text[],vec text)`,
+          `INSERT INTO page_chunks(id,page_id,workspace_id,chunk_index,text,block_ids,embedding,model,page_version,digest)
+          SELECT id,$1,$2,idx,body,blocks,vec::vector,$3,$4,print FROM
+          jsonb_to_recordset($5) AS x(id text,idx int,body text,blocks text[],vec text,print text)`,
           [job.page_id, job.workspace_id, PROFILE, page.rows[0].version, JSON.stringify(records)],
         );
       }

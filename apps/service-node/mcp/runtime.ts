@@ -8,7 +8,12 @@ const hostTool = (name: string, description: string, fields: string[], required 
   name, description,
   inputSchema: {type:'object',properties:Object.fromEntries(fields.map(k => [k,{type:'string'}])),required,additionalProperties:false},
 });
-const tools = [
+const tools:Tool[] = [
+  hostTool('blok_list_databases','List readable databases and their filterable columns and options.',['workspace']),
+  {name:'blok_query_database',description:'Count all matching rows and list up to 50 row IDs and titles in document order. Filters use exact equality (membership for multiSelect) and combine with AND. For the next page pass nextOffset as offset.',
+    inputSchema:{type:'object',properties:{workspace:{type:'string'},page:{type:'string'},database:{type:'string'},
+      filters:{type:'array',maxItems:8,items:{type:'object',properties:{column:{type:'string'},value:{type:'string'}},required:['column','value'],additionalProperties:false}},
+      offset:{type:'integer',minimum:0}},required:['workspace','page','database','filters'],additionalProperties:false}},
   hostTool('blok_list_workspaces','List workspaces available to this account.',[]),
   hostTool('blok_list_pages','List visible pages in the workspace.',['workspace']),
   hostTool('blok_create_page','Create a page in a writable workspace.',['workspace','title','parentId'],['workspace','title']),

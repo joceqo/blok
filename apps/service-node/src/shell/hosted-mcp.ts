@@ -1,3 +1,5 @@
+import {readWorkspaceDatabases} from './workspace-databases.ts';
+import {DatabaseInputError} from './database-reader.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
@@ -40,7 +42,8 @@ export function mcpBackend(pool: PgPool) {
     let committed = false;
     let uploaded: string | undefined;
     try {
-      await db.query('BEGIN');
+      const databaseTool = name === 'blok_list_databases' || name === 'blok_query_database';
+      await db.query(databaseTool ? 'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN');
       const {rows:[account]} = await db.query<{user_id:string}>('SELECT user_id FROM mcp_tokens WHERE id=$1 AND expires_at>now() FOR SHARE',[principal.slice(4)]);
       if (!account) return denied('Invalid or expired token');
       if (name === 'blok_list_workspaces') {
@@ -54,6 +57,8 @@ export function mcpBackend(pool: PgPool) {
         FROM workspaces w JOIN memberships m ON m.workspace_id=w.id WHERE w.slug=$1 AND m.user_id=$2
         ${write ? 'FOR UPDATE OF w FOR SHARE OF m' : ''}`,[args.workspace,account.user_id]);
       if (!ws) return denied('Workspace unavailable');
+      if (databaseTool) return text(await readWorkspaceDatabases(db,ws.id,account.user_id,ws.role,
+        name === 'blok_list_databases' ? 'list' : 'query', args));
       if (name === 'blok_list_pages') {
         const pages = await loadIndexPages(db,ws.id,account.user_id);
         return text({pages:workspaceIndex(pages,ws.role,Number(ws.revision)).pages});
@@ -85,7 +90,7 @@ export function mcpBackend(pool: PgPool) {
       committed = true;
       return text({id,title:args.title,workspace:ws.slug,revision:Number(revision.revision)});
     } catch (error) {
-      if (error instanceof WorkspaceError) return denied(error.message);
+      if (error instanceof WorkspaceError || error instanceof DatabaseInputError) return denied(error.message);
       throw error;
     } finally {
       try {

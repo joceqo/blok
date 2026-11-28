@@ -5,7 +5,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createHostedAi } from './hosted-ai.ts';
 import { ensureVectorIndex } from './vector-index.ts';
-import { createEmbeddings, indexNextPage, semanticHits } from './embeddings.ts';
+import { createEmbeddings, indexNextPage, PROJECTION, semanticHits } from './embeddings.ts';
 import { createWorkspaceSearch } from './workspace-search.ts';
 
 const url = process.env.VECTOR_TEST_DATABASE_URL;
@@ -55,7 +55,7 @@ beforeAll(async () => {
   if (!url) return;
   await db.query('CREATE SCHEMA ' + schema);
   await db.query(await readFile(new URL('../../../service/schema.sql', import.meta.url), 'utf8'));
-  expect(await ensureVectorIndex(db)).toBe(true);
+  expect(await ensureVectorIndex(db, PROJECTION)).toBe(true);
   await db.query(
     "INSERT INTO workspaces(id,slug,name) VALUES('w','demo','Demo'); INSERT INTO users(id,email) VALUES('admin','a@test'),('reader','r@test'); INSERT INTO memberships VALUES('w','admin','admin'),('w','reader','viewer')",
   );
@@ -213,8 +213,8 @@ it.skipIf(!url)('keeps French paraphrases and abstains on unrelated questions us
     for (const [axis, [id, title, excerpt]] of pages.entries()) {
       await client.query('INSERT INTO pages(id,workspace_id,metadata,content) VALUES($1,$2,$3,$4)', [id, workspace, {title}, doc(id, excerpt)]);
       await client.query(`INSERT INTO page_chunks(id,page_id,workspace_id,chunk_index,text,block_ids,embedding,model,page_version)
-        SELECT id,id,workspace_id,0,$2,ARRAY[id],$3::vector,'text-embedding-3-small:1536:v1',version FROM pages WHERE id=$1`,
-        [id, excerpt, vector(pages.map((_, i) => Number(i === axis)))]);
+        SELECT id,id,workspace_id,0,$2,ARRAY[id],$3::vector,$4,version FROM pages WHERE id=$1`,
+        [id, excerpt, vector(pages.map((_, i) => Number(i === axis))), PROJECTION]);
     }
     const ids = pages.map(([id]) => id);
     await client.query('UPDATE page_embedding_jobs SET due_at=NULL WHERE page_id=ANY($1::text[])', [ids]);
