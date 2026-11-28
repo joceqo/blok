@@ -39,12 +39,18 @@ export function createWorkspaceSearch(pool: PgPool, embed?: ReturnType<typeof cr
     const question = typeof body?.query === 'string' ? body.query.trim() : '';
     if (!question || question.length > 1200) return c.json({ error: 'La recherche accepte entre 1 et 1 200 caractères.' }, 400);
     const palette = body?.mode === 'palette';
-    const queryVector = !palette && embed ? await embedQuestion(pool,embed,key,c.req.param('slug')!,question,c.req.raw.signal)
+    // Started, not awaited: turning the question into a vector is a round trip to the provider,
+    // and the lexical pass needs none of it. Run side by side, a question costs the slower of the
+    // two instead of their sum. The vector is only needed once the readable pages are known.
+    const asking = !palette && embed ? embedQuestion(pool,embed,key,c.req.param('slug')!,question,c.req.raw.signal)
       .catch(error => {
         if (c.req.raw.signal.aborted) throw error;
         // A missing or unavailable provider leaves the lexical path available.
         return undefined;
       }) : undefined;
+    // An abort is re-thrown above, and the real await is further down. Should the request fail
+    // before then — a refused scope, a closed connection — that rejection would be unobserved.
+    asking?.catch(() => undefined);
     const client = await pool.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -74,6 +80,7 @@ export function createWorkspaceSearch(pool: PgPool, embed?: ReturnType<typeof cr
           left(ts_headline('french',coalesce(body,title),q,'MaxWords=45,MinWords=12,StartSel="",StopSel=""'),800) AS excerpt
           FROM hits ORDER BY rank DESC,id LIMIT $5`, [workspace_id, ids, question, palette, palette ? 40 : 5]);
       let sources = result.rows;
+      const queryVector = await asking;
       if (queryVector?.workspace === workspace_id) {
         await client.query('SAVEPOINT semantic');
         try {
