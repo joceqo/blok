@@ -25,6 +25,7 @@ import {
 } from "../lib/time-zones";
 import { getTimeZoneLabel } from "../lib/timezone-label";
 import { expandRecurringEvents } from "../lib/recurrence";
+import { onScreenSlice } from "../lib/scroll-flick";
 import { useHorizontalScroll } from "../hooks/use-horizontal-scroll";
 import { useEventKeyboard } from "../hooks/use-event-keyboard";
 import { useEventDrag } from "../hooks/use-event-drag";
@@ -595,6 +596,13 @@ export function TimeGrid({
     useHorizontalScroll({
       containerRef: scrollContainerRef,
       dayColumnWidth,
+      visibleDays: VISIBLE_DAYS,
+      // A week view re-anchors on the first day of the week, so a gesture that
+      // stopped mid-week would be pulled back to where it started, or past it
+      snapStep:
+        view === "week" && edgeNavigationStep === DAYS_PER_WEEK
+          ? edgeNavigationDays
+          : 1,
       onNavigate: handleNavigate,
       disabled:
         dragState?.isDragging ||
@@ -648,6 +656,17 @@ export function TimeGrid({
   );
 
   const bufferedDays = withIsToday(bufferedBaseDays, today);
+
+  /**
+   * The days the gesture has brought on screen. `days` stays on the current
+   * date until a gesture lands, so it is not what the viewer is looking at.
+   */
+  const onScreenDays = onScreenSlice(
+    bufferedDays,
+    dynamicBuffer,
+    scrollDaysDelta,
+    VISIBLE_DAYS,
+  );
 
   const bufferedDayDates = React.useMemo(
     () => bufferedBaseDays.map((d) => d.date),
@@ -939,7 +958,7 @@ export function TimeGrid({
               </div>
             </div>
             <WeekViewTimeIndicator
-              days={days}
+              days={onScreenDays}
               hourHeight={hourHeight}
               scrollDays={bufferedDays}
               scrollStyle={scrollStyle}

@@ -1,11 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  advanceFlick,
+  flickLimit,
+  horizontalWheelDelta,
+  isDetentWheel,
+  releaseFlick,
+  restingFlick,
+  type FlickState,
+} from "../lib/scroll-flick";
 import { usePrefersReducedMotion } from "./use-media-query";
 
 interface UseHorizontalScrollOptions {
   containerRef: React.RefObject<HTMLDivElement | null>;
   dayColumnWidth: number;
+  /** Day columns on screen: the furthest one gesture travels */
+  visibleDays: number;
+  /**
+   * How far the view moves in one step, in columns. A week view that
+   * re-anchors on the first day of the week moves by whole weeks.
+   */
+  snapStep?: number;
   onNavigate: (daysDelta: number) => void;
   disabled?: boolean;
 }
@@ -18,12 +34,15 @@ interface UseHorizontalScrollReturn {
   triggerSlideAnimation: (daysDelta: number) => void;
 }
 
+/** A gesture has ended once the wheel has been quiet for this long */
 const SCROLL_END_DEBOUNCE_MS = 150;
 const SNAP_ANIMATION_MS = 200;
 
 export function useHorizontalScroll({
   containerRef,
   dayColumnWidth,
+  visibleDays,
+  snapStep = 1,
   onNavigate,
   disabled,
 }: UseHorizontalScrollOptions): UseHorizontalScrollReturn {
@@ -34,52 +53,71 @@ export function useHorizontalScroll({
   // Snaps and slides jump straight to their end instead of animating
   const prefersReducedMotion = usePrefersReducedMotion();
 
-  const scrollEndTimer = useRef<ReturnType<typeof setTimeout>>(null);
-  const accumulatedDelta = useRef(0);
+  const restTimer = useRef<ReturnType<typeof setTimeout>>(null);
+  const snapTimer = useRef<ReturnType<typeof setTimeout>>(null);
+  /** What the snap in flight still has to do, so a new gesture can let it finish */
+  const pendingSnap = useRef<(() => void) | null>(null);
+  const flick = useRef<FlickState>(restingFlick);
   const onNavigateRef = useRef(onNavigate);
   useEffect(() => {
     onNavigateRef.current = onNavigate;
   }, [onNavigate]);
 
+  /** Runs the snap in flight at once. A gesture that interrupts one never loses it. */
+  const flushSnap = useCallback(() => {
+    if (snapTimer.current) clearTimeout(snapTimer.current);
+    snapTimer.current = null;
+    const finish = pendingSnap.current;
+    pendingSnap.current = null;
+    finish?.();
+  }, []);
+
+  /**
+   * Ends the slide. It does NOT end the gesture: a trackpad is still sending
+   * momentum, and taking that for a new gesture would travel a second time.
+   * Only silence ends a gesture, in the timer below.
+   */
+  const rest = useCallback(() => {
+    setScrollOffset(0);
+    setIsAnimating(false);
+    setIsScrolling(false);
+  }, []);
+
+  /** Slides to the column the gesture landed on, then moves the calendar there */
   const snapAndNavigate = useCallback(
-    (offset: number) => {
+    (daysDelta: number) => {
       if (dayColumnWidth <= 0) return;
+      flushSnap();
 
-      const daysDelta = Math.round(offset / dayColumnWidth);
-
-      if (prefersReducedMotion) {
-        if (daysDelta !== 0) onNavigateRef.current(-daysDelta);
-        setScrollOffset(0);
-        setIsScrolling(false);
-        accumulatedDelta.current = 0;
-        return;
-      }
-
-      // If scroll distance < half a day-column width, snap back
       if (daysDelta === 0) {
+        // Short of half a column: back to where the gesture started
+        if (prefersReducedMotion) {
+          rest();
+          return;
+        }
         setIsAnimating(true);
         setScrollOffset(0);
-        setTimeout(() => {
-          setIsAnimating(false);
-          setIsScrolling(false);
-        }, SNAP_ANIMATION_MS);
+        pendingSnap.current = rest;
+        snapTimer.current = setTimeout(flushSnap, SNAP_ANIMATION_MS);
         return;
       }
 
-      // Snap to exact day boundary then navigate
-      const targetOffset = daysDelta * dayColumnWidth;
-      setIsAnimating(true);
-      setScrollOffset(targetOffset);
+      if (prefersReducedMotion) {
+        onNavigateRef.current(daysDelta);
+        rest();
+        return;
+      }
 
-      setTimeout(() => {
-        onNavigateRef.current(-daysDelta);
-        setScrollOffset(0);
-        setIsAnimating(false);
-        setIsScrolling(false);
-        accumulatedDelta.current = 0;
-      }, SNAP_ANIMATION_MS);
+      // The grid shifts against the direction of travel
+      setIsAnimating(true);
+      setScrollOffset(-daysDelta * dayColumnWidth);
+      pendingSnap.current = () => {
+        onNavigateRef.current(daysDelta);
+        rest();
+      };
+      snapTimer.current = setTimeout(flushSnap, SNAP_ANIMATION_MS);
     },
-    [dayColumnWidth, prefersReducedMotion],
+    [dayColumnWidth, prefersReducedMotion, flushSnap, rest],
   );
 
   // Programmatic slide animation for button/keyboard navigation
@@ -112,40 +150,86 @@ export function useHorizontalScroll({
     const container = containerRef.current;
     if (!container) return;
 
-    const handleWheel = (e: WheelEvent) => {
-      if (disabled) return;
+    /** The gesture is over once the wheel has been quiet, momentum included */
+    const waitForQuiet = () => {
+      if (restTimer.current) clearTimeout(restTimer.current);
+      restTimer.current = setTimeout(() => {
+        restTimer.current = null;
+        const gesture = flick.current;
+        flick.current = restingFlick;
+        // A gesture that already travelled its page has moved the calendar
+        if (gesture.spent) {
+          setIsScrolling(false);
+          return;
+        }
+        snapAndNavigate(releaseFlick(gesture, dayColumnWidth, snapStep));
+      }, SCROLL_END_DEBOUNCE_MS);
+    };
 
-      // Only handle horizontal-dominant scrolls
-      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+    const handleWheel = (e: WheelEvent) => {
+      if (disabled || dayColumnWidth <= 0) return;
+
+      const delta = horizontalWheelDelta(
+        e,
+        flickLimit(dayColumnWidth, visibleDays),
+      );
+      // A vertical scroll belongs to the hours
+      if (delta === null) return;
 
       e.preventDefault();
 
-      setIsScrolling(true);
-
-      // Negate deltaX: scroll right (positive deltaX) = move calendar left = navigate forward
-      accumulatedDelta.current += -e.deltaX;
-      setScrollOffset(accumulatedDelta.current);
-
-      // Reset debounce timer
-      if (scrollEndTimer.current) {
-        clearTimeout(scrollEndTimer.current);
+      // One notch of a mouse wheel: a step of its own, travelled now. Notches
+      // are too small and too far apart to ever add up to a gesture.
+      if (isDetentWheel(e)) {
+        if (restTimer.current) clearTimeout(restTimer.current);
+        restTimer.current = null;
+        flick.current = restingFlick;
+        snapAndNavigate(Math.sign(delta) * Math.max(1, snapStep));
+        return;
       }
 
-      scrollEndTimer.current = setTimeout(() => {
-        snapAndNavigate(accumulatedDelta.current);
-        accumulatedDelta.current = 0;
-      }, SCROLL_END_DEBOUNCE_MS);
+      // The momentum trailing a gesture that already travelled its page. It is
+      // not a new gesture, and must move nothing: just wait for it to run out.
+      if (flick.current.spent) {
+        waitForQuiet();
+        return;
+      }
+
+      // A gesture that starts over a snap lets that one land first
+      if (pendingSnap.current) flushSnap();
+      setIsScrolling(true);
+
+      const step = advanceFlick(
+        flick.current,
+        -delta,
+        dayColumnWidth,
+        visibleDays,
+      );
+      flick.current = step.state;
+      setScrollOffset(step.state.offset);
+      waitForQuiet();
+
+      // A full page: travel now rather than at the end of the momentum
+      if (step.commitDays !== 0) snapAndNavigate(step.commitDays);
     };
 
     container.addEventListener("wheel", handleWheel, { passive: false });
 
     return () => {
       container.removeEventListener("wheel", handleWheel);
-      if (scrollEndTimer.current) {
-        clearTimeout(scrollEndTimer.current);
-      }
+      if (restTimer.current) clearTimeout(restTimer.current);
+      if (snapTimer.current) clearTimeout(snapTimer.current);
+      pendingSnap.current = null;
     };
-  }, [containerRef, snapAndNavigate, disabled]);
+  }, [
+    containerRef,
+    dayColumnWidth,
+    visibleDays,
+    snapStep,
+    disabled,
+    snapAndNavigate,
+    flushSnap,
+  ]);
 
   return {
     scrollOffset,
